@@ -1,8 +1,8 @@
-# decision_engine.py
+# decision_engine.py (FINAL, SIMPLE, DATA-DRIVEN, FOR M.A.N.T.R.A.)
 
 import numpy as np
 import pandas as pd
-from typing import Optional, Dict, List, Union
+from typing import Optional, Dict, List
 from datetime import date
 import logging
 
@@ -10,10 +10,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ============================================================================
-# SIMPLE CONFIGURATION
+# CONFIGURATION
 # ============================================================================
 
-# Only the *minimum* rules — let data speak, no fancy boosts.
 DEFAULT_THRESHOLDS = {
     "buy": 75,        # Final score >= 75 for Buy
     "watch": 60,      # Final score >= 60 for Watch
@@ -29,7 +28,7 @@ def get_thresholds(custom: Optional[Dict] = None) -> Dict[str, float]:
 # MAIN SIMPLE DECISION PIPELINE
 # ============================================================================
 
-def run_decision_engine_simple(
+def run_decision_engine(
     df: pd.DataFrame,
     thresholds: Optional[Dict] = None,
     tag_date: Optional[str] = None,
@@ -102,7 +101,7 @@ def run_decision_engine_simple(
     return df.reset_index(drop=True)
 
 # ============================================================================
-# SIMPLE DIAGNOSTIC (OPTIONAL)
+# OPTIONAL SIMPLE DIAGNOSTIC (NOT USED IN MAIN APP)
 # ============================================================================
 
 def simple_engine_diagnostics(df: pd.DataFrame) -> List[str]:
