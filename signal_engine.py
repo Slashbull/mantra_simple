@@ -1,7 +1,7 @@
 # signal_engine.py (FINAL SIMPLE VERSION – FOR M.A.N.T.R.A. SIMPLE DASHBOARD)
-import logging
-from typing import Dict, List, Optional, Tuple, Union
 
+import logging
+from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
@@ -13,7 +13,7 @@ DEFAULT_SCORE = 50.0
 class SimpleSignalEngine:
     """
     Simple, robust signal engine for M.A.N.T.R.A. Simple Dashboard.
-    Only uses core data-driven factors: Momentum, Value, EPS, Volume, Sector.
+    Uses core data-driven factors: Momentum, Value, EPS, Volume, Sector.
     No advanced bonus/penalty logic.
     """
 
@@ -107,7 +107,6 @@ class SimpleSignalEngine:
         return df
 
     def compute_sector(self, df: pd.DataFrame, sector_df: pd.DataFrame) -> pd.DataFrame:
-        # Map sector 3M average to each stock (if available)
         df["sector"] = df.get("sector", "Unknown").fillna("Unknown").astype(str)
         if sector_df is not None and not sector_df.empty:
             sector_map = pd.Series(
@@ -127,7 +126,6 @@ class SimpleSignalEngine:
         df = self.compute_volume(df)
         df = self.compute_eps(df)
         df = self.compute_sector(df, sector_df)
-        # Weighted final score
         score_cols = ["momentum_score", "value_score", "volume_score", "eps_score", "sector_score"]
         weights = [
             sum(self.momentum_weights.values()), self.value_weight,
@@ -139,7 +137,7 @@ class SimpleSignalEngine:
         df["final_rank"] = df["final_score"].rank(method="min", ascending=False).fillna(999999).astype(int)
         return df
 
-def run_simple_signal_engine(
+def run_signal_engine(
     df: pd.DataFrame,
     sector_df: pd.DataFrame,
     debug: bool = False
@@ -149,13 +147,13 @@ def run_simple_signal_engine(
     Returns DataFrame with factor and final scores, rank.
     """
     if df.empty:
-        logger.error("Empty dataframe provided to simple signal engine")
+        logger.error("Empty dataframe provided to signal engine")
         return df
 
     engine = SimpleSignalEngine.balanced()
     result = engine.fit_transform(df, sector_df)
     if debug:
-        logger.info(f"Simple signal engine scored {len(result)} stocks")
+        logger.info(f"Signal engine scored {len(result)} stocks")
     return result
 
 # END OF FILE
