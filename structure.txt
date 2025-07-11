@@ -1,0 +1,21 @@
+/mantra/
+│
+├── alert_engine.py            # All alert logic (Buy, spike, sector, EPS) for dashboard
+├── anomaly_detector.py        # Detects price/volume/EPS anomalies, spikes, reversals
+├── core_system_foundation.py  # Data loading, cleaning, schema validation, summary
+├── decision_engine.py         # Buy/Watch/Avoid tagger, target, risk, upside, logic
+├── edge_finder.py             # Edge setups: breakouts, value, volatility, sector leaders
+├── filters.py                 # All dashboard filters (tag, sector, category, etc.)
+├── health_panel.py            # Sidebar data health/diagnostics (optional, advanced)
+├── regime_shifter.py          # Regime presets, auto-detect, weights (momentum/value/...)
+├── sector_mapper.py           # Sector scores, quartile ranking, heatmap/rotation signals
+├── sector_rotation_engine.py  # Sector rotation analytics (heatmap, trends, regime hints)
+├── signal_engine.py           # All scoring logic (momentum, value, EPS, sector, volume)
+├── streamlit_dashboard.py     # Main Streamlit app/dashboard UI (entry point)
+├── watchlist_builder.py       # Watchlist & opportunity builders (top-N, sector leaders, etc.)
+│
+├── requirements.txt           # [Optional] Python requirements (pandas, streamlit, numpy, etc.)
+├── README.md                  # [Optional] Project description, usage, FAQ, credits
+│
+└── structure.txt              # This file: locked directory structure for reference
+  
