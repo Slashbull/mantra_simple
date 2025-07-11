@@ -1,5 +1,4 @@
-# streamlit_dashboard.py (SIMPLE, FINAL, BEST UI/UX, 100% DATA-DRIVEN)
-
+# streamlit_dashboard.py (FINAL, BULLETPROOF, SIMPLE, 100% DATA-DRIVEN)
 import streamlit as st
 import pandas as pd
 import io
@@ -28,9 +27,9 @@ st.caption("Decisions, Not Guesses. Data-Driven Edge Only.")
 with st.sidebar:
     st.markdown("### 🩺 Data Health")
     data = load_and_process()
-    stock_df = data["watchlist"]
-    sector_df = data["sector"]
-    summary = data["summary"]
+    stock_df = data.get("watchlist", pd.DataFrame())
+    sector_df = data.get("sector", pd.DataFrame())
+    summary = data.get("summary", {})
     st.metric("Stocks", summary.get("total_stocks", 0))
     st.metric("Sectors", summary.get("total_sectors", 0))
     st.metric("Blanks", summary.get("blank_cells", 0))
@@ -61,18 +60,22 @@ cat_col = "category"
 categories = ["All"] + sorted(df[cat_col].dropna().unique()) if cat_col in df else ["All"]
 selected_category = st.sidebar.selectbox("Category", categories, index=0)
 
-sector_list = ["All"] + sorted(sector_scores["sector"].unique())
+sector_list = ["All"] + sorted(sector_scores["sector"].unique()) if "sector" in sector_scores else ["All"]
 selected_sector = st.sidebar.selectbox("Sector", sector_list, index=0)
 
 search = st.sidebar.text_input("Search Ticker or Company").upper().strip()
 export_fmt = st.sidebar.radio("Export", ["CSV", "Excel"], index=0)
 
-# --- Data Filtering Logic (robust, all-scenario) ---
+# --- Bulletproof Filtering Logic ---
 def smart_filter(df):
+    # Return empty DataFrame if missing columns
+    required = ["tag", "final_score"]
+    if df is None or df.empty or any(col not in df.columns for col in required):
+        return df.iloc[0:0]
     q = (df["tag"] == selected_tag) & (df["final_score"] >= min_score)
-    if selected_category != "All":
-        q &= (df[cat_col] == selected_category)
-    if selected_sector != "All":
+    if selected_category != "All" and "category" in df.columns:
+        q &= (df["category"] == selected_category)
+    if selected_sector != "All" and "sector" in df.columns:
         q &= (df["sector"] == selected_sector)
     if search:
         q &= (
@@ -86,12 +89,15 @@ filtered = smart_filter(df)
 # --- Main KPIs ---
 k1, k2, k3 = st.columns(3)
 k1.metric("Total Stocks", len(df))
-k2.metric("Buy Tags", int(df["tag"].eq("Buy").sum()))
-k3.metric("Anomalies", int(df["anomaly"].sum()))
+k2.metric("Buy Tags", int(df["tag"].eq("Buy").sum()) if "tag" in df else 0)
+k3.metric("Anomalies", int(df["anomaly"].sum()) if "anomaly" in df else 0)
 
 # --- Top 10 Buy Cards ---
 st.subheader("🎯 Top 10 Buy Ideas")
-top10 = filtered[filtered["tag"] == "Buy"].nlargest(10, "final_score")
+if "tag" in filtered and "final_score" in filtered:
+    top10 = filtered[filtered["tag"] == "Buy"].nlargest(10, "final_score")
+else:
+    top10 = pd.DataFrame()
 if top10.empty:
     st.info("No 'Buy' ideas found with filters.")
 else:
@@ -126,13 +132,17 @@ with tab1:
 # --- Tab 2: Sector Rotation ---
 with tab2:
     st.subheader("Sector Heatmap / Rotation")
-    st.dataframe(sector_scores, use_container_width=True)
-    st.bar_chart(sector_scores.set_index("sector")["sector_score"])
+    if sector_scores.empty:
+        st.warning("No sector data.")
+    else:
+        st.dataframe(sector_scores, use_container_width=True)
+        if "sector_score" in sector_scores and "sector" in sector_scores:
+            st.bar_chart(sector_scores.set_index("sector")["sector_score"])
 
 # --- Tab 3: Anomalies ---
 with tab3:
     st.subheader("Anomaly Detector")
-    anomalies = df[df["anomaly"]]
+    anomalies = df[df["anomaly"]] if "anomaly" in df else pd.DataFrame()
     if anomalies.empty:
         st.success("No anomalies detected in current regime.")
     else:
@@ -141,7 +151,7 @@ with tab3:
 # --- Tab 4: Edge Finder ---
 with tab4:
     st.subheader("Edge Finder — Alpha Opportunities")
-    edge_df = find_edges(filtered)
+    edge_df = find_edges(filtered) if not filtered.empty else pd.DataFrame()
     if edge_df.empty:
         st.info("No special edges found in current filter.")
     else:
