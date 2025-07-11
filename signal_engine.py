@@ -1,4 +1,4 @@
-# signal_engine.py (FINAL, SIMPLE, BULLETPROOF, FOR M.A.N.T.R.A.)
+    # signal_engine.py (FINAL, SIMPLE, BULLETPROOF, FOR M.A.N.T.R.A.)
 
 import logging
 from typing import Dict, List, Optional
@@ -106,8 +106,21 @@ class SimpleSignalEngine:
         return df
 
     def compute_sector(self, df: pd.DataFrame, sector_df: pd.DataFrame) -> pd.DataFrame:
-        df["sector"] = df.get("sector", "Unknown").fillna("Unknown").astype(str)
-        if sector_df is not None and not sector_df.empty and "sector" in sector_df and "sector_avg_3m" in sector_df:
+        # --- BULLETPROOF sector mapping, works with object, category, or missing ---
+        if "sector" not in df.columns:
+            df["sector"] = "Unknown"
+        else:
+            if pd.api.types.is_categorical_dtype(df["sector"]):
+                if "Unknown" not in df["sector"].cat.categories:
+                    df["sector"] = df["sector"].cat.add_categories("Unknown")
+                df["sector"] = df["sector"].fillna("Unknown").astype(str)
+            else:
+                df["sector"] = df["sector"].fillna("Unknown").astype(str)
+
+        if (
+            sector_df is not None and not sector_df.empty
+            and "sector" in sector_df and "sector_avg_3m" in sector_df
+        ):
             sector_map = pd.Series(
                 pd.to_numeric(sector_df.set_index("sector")["sector_avg_3m"], errors="coerce"),
                 index=sector_df["sector"]
