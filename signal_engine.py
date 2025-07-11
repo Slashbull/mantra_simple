@@ -1,4 +1,4 @@
-# signal_engine.py (FINAL SIMPLE VERSION – FOR M.A.N.T.R.A. SIMPLE DASHBOARD)
+# signal_engine.py (FINAL, SIMPLE, BULLETPROOF, FOR M.A.N.T.R.A.)
 
 import logging
 from typing import Dict, List, Optional
@@ -26,7 +26,6 @@ class SimpleSignalEngine:
         sector_weight: float,
         debug: bool = False
     ):
-        # Normalize weights to sum 1.0
         total = (
             sum(momentum_weights.values())
             + value_weight
@@ -34,7 +33,7 @@ class SimpleSignalEngine:
             + eps_weight
             + sector_weight
         )
-        if not np.isclose(total, 1.0, rtol=1e-3):
+        if not np.isclose(total, 1.0, rtol=1e-2):
             if debug:
                 logger.warning(f"Total weight = {total:.3f}, normalizing to 1.0")
             factor = 1.0 / total
@@ -64,7 +63,7 @@ class SimpleSignalEngine:
 
     def _ensure_cols(self, df: pd.DataFrame, cols: List[str], fill: float = 0.0) -> pd.DataFrame:
         for col in cols:
-            if col not in df:
+            if col not in df.columns:
                 df[col] = fill
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(fill)
         return df
@@ -81,8 +80,8 @@ class SimpleSignalEngine:
         pct_scores = []
         for col in cols:
             pct_scores.append(self._percentile_score(df[col], ascending=True))
-        weights = np.array([self.momentum_weights[c] for c in cols])
-        arr = np.vstack([s.values for s in pct_scores])
+        weights = np.array([self.momentum_weights[c] for c in cols], dtype=np.float64)
+        arr = np.vstack([s.values.astype(np.float64) for s in pct_scores])
         df["momentum_score"] = np.average(arr, axis=0, weights=weights)
         return df
 
@@ -108,7 +107,7 @@ class SimpleSignalEngine:
 
     def compute_sector(self, df: pd.DataFrame, sector_df: pd.DataFrame) -> pd.DataFrame:
         df["sector"] = df.get("sector", "Unknown").fillna("Unknown").astype(str)
-        if sector_df is not None and not sector_df.empty:
+        if sector_df is not None and not sector_df.empty and "sector" in sector_df and "sector_avg_3m" in sector_df:
             sector_map = pd.Series(
                 pd.to_numeric(sector_df.set_index("sector")["sector_avg_3m"], errors="coerce"),
                 index=sector_df["sector"]
@@ -126,12 +125,23 @@ class SimpleSignalEngine:
         df = self.compute_volume(df)
         df = self.compute_eps(df)
         df = self.compute_sector(df, sector_df)
+
+        # --- Defensive: Ensure all score columns exist and are numeric ---
         score_cols = ["momentum_score", "value_score", "volume_score", "eps_score", "sector_score"]
+        for col in score_cols:
+            if col not in df.columns:
+                df[col] = DEFAULT_SCORE
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(DEFAULT_SCORE)
+
         weights = [
             sum(self.momentum_weights.values()), self.value_weight,
             self.volume_weight, self.eps_weight, self.sector_weight
         ]
-        arr = np.vstack([df[c].fillna(DEFAULT_SCORE).values for c in score_cols])
+        weights = np.array(weights, dtype=np.float64)
+        if not np.isclose(weights.sum(), 1.0, rtol=1e-2):
+            weights = weights / weights.sum()
+        arr = np.vstack([df[c].values.astype(np.float64) for c in score_cols])
+
         df["final_score"] = np.average(arr, axis=0, weights=weights)
         df["final_score"] = df["final_score"].clip(0, 100).round(2)
         df["final_rank"] = df["final_score"].rank(method="min", ascending=False).fillna(999999).astype(int)
@@ -140,6 +150,7 @@ class SimpleSignalEngine:
 def run_signal_engine(
     df: pd.DataFrame,
     sector_df: pd.DataFrame,
+    regime: Optional[str] = "balanced",
     debug: bool = False
 ) -> pd.DataFrame:
     """
@@ -150,7 +161,23 @@ def run_signal_engine(
         logger.error("Empty dataframe provided to signal engine")
         return df
 
-    engine = SimpleSignalEngine.balanced()
+    # Regime-based weights (simple version)
+    regime_weights = {
+        "balanced":   dict(mw={"ret_3d":0.10, "ret_7d":0.20, "ret_30d":0.30, "ret_3m":0.40}, v=0.20, vo=0.20, e=0.20, s=0.10),
+        "momentum":   dict(mw={"ret_3d":0.15, "ret_7d":0.25, "ret_30d":0.30, "ret_3m":0.30}, v=0.15, vo=0.20, e=0.20, s=0.10),
+        "value":      dict(mw={"ret_3d":0.10, "ret_7d":0.10, "ret_30d":0.20, "ret_3m":0.20}, v=0.35, vo=0.15, e=0.10, s=0.10),
+        "growth":     dict(mw={"ret_3d":0.10, "ret_7d":0.15, "ret_30d":0.25, "ret_3m":0.20}, v=0.10, vo=0.15, e=0.35, s=0.15),
+        "volume":     dict(mw={"ret_3d":0.10, "ret_7d":0.15, "ret_30d":0.15, "ret_3m":0.15}, v=0.10, vo=0.40, e=0.15, s=0.10),
+    }
+    w = regime_weights.get(regime, regime_weights["balanced"])
+    engine = SimpleSignalEngine(
+        momentum_weights=w["mw"],
+        value_weight=w["v"],
+        volume_weight=w["vo"],
+        eps_weight=w["e"],
+        sector_weight=w["s"],
+        debug=debug
+    )
     result = engine.fit_transform(df, sector_df)
     if debug:
         logger.info(f"Signal engine scored {len(result)} stocks")
