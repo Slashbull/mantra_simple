@@ -1,4 +1,4 @@
-# streamlit_dashboard.py (FINAL, BULLETPROOF, SIMPLE, 100% DATA-DRIVEN)
+# streamlit_dashboard.py (FINAL, BULLETPROOF, 100% DATA-DRIVEN)
 import streamlit as st
 import pandas as pd
 import io
@@ -26,10 +26,9 @@ st.caption("Decisions, Not Guesses. Data-Driven Edge Only.")
 # --- Health panel in sidebar ---
 with st.sidebar:
     st.markdown("### 🩺 Data Health")
-    data = load_and_process()
-    stock_df = data.get("watchlist", pd.DataFrame())
-    sector_df = data.get("sector", pd.DataFrame())
-    summary = data.get("summary", {})
+    # --- Use the new tuple output (stocks_df, sector_df, summary) ---
+    stocks_df, sector_df, summary = load_and_process()
+    stock_df = stocks_df  # for compatibility in downstream code
     st.metric("Stocks", summary.get("total_stocks", 0))
     st.metric("Sectors", summary.get("total_sectors", 0))
     st.metric("Blanks", summary.get("blank_cells", 0))
@@ -57,7 +56,7 @@ selected_tag = st.sidebar.selectbox("Tag", tags, index=0)
 min_score = st.sidebar.slider("Min Final Score", 0, 100, 60)
 
 cat_col = "category"
-categories = ["All"] + sorted(df[cat_col].dropna().unique()) if cat_col in df else ["All"]
+categories = ["All"] + sorted(df[cat_col].dropna().unique()) if cat_col in df and cat_col in df.columns else ["All"]
 selected_category = st.sidebar.selectbox("Category", categories, index=0)
 
 sector_list = ["All"] + sorted(sector_scores["sector"].unique()) if "sector" in sector_scores else ["All"]
