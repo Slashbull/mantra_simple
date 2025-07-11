@@ -50,7 +50,6 @@ def _fetch_csv(url: str) -> pd.DataFrame:
 def load_clean_watchlist(
     source: str, is_url: bool = True
 ) -> pd.DataFrame:
-    # Confirmed columns as per your final schema
     percent_cols = [
         "ret_1d","ret_3d","ret_7d","ret_30d","ret_3m","ret_6m",
         "ret_1y","ret_3y","ret_5y","from_low_pct","from_high_pct","eps_change_pct"
@@ -69,14 +68,11 @@ def load_clean_watchlist(
         df = _fetch_csv(source)
     else:
         df = pd.read_csv(source)
-    # Remove unnamed columns
     df = df.loc[:, ~df.columns.str.match(r"Unnamed")]
-    # Normalize headers
     df.columns = [
         re.sub(r"\s+", "_", re.sub(r"[^\w\s]", "", col.strip().lower()))
         for col in df.columns
     ]
-    # Cleaning
     for col in percent_cols:
         if col in df.columns:
             df[col] = df[col].apply(_clean_percent)
@@ -86,16 +82,16 @@ def load_clean_watchlist(
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    # Ticker, company_name, sector cleanup
     for col in key_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
     if "ticker" in df.columns:
         df["ticker"] = df["ticker"].str.upper()
-    # Drop dups, drop rows missing criticals
     df = df.drop_duplicates(subset=["ticker"]).reset_index(drop=True)
-    df = df.dropna(subset=["ticker","price","final_score"], how="any")
-    # Ensure final_score >= 0
+    # Only drop rows missing any of the criticals (but don't crash if missing 'final_score' at start)
+    drop_cols = [c for c in ["ticker","price","final_score"] if c in df.columns]
+    if drop_cols:
+        df = df.dropna(subset=drop_cols, how="any")
     if "final_score" in df.columns:
         df["final_score"] = df["final_score"].clip(lower=0)
     return df
@@ -103,7 +99,6 @@ def load_clean_watchlist(
 def load_clean_industry(
     source: str, is_url: bool = True
 ) -> pd.DataFrame:
-    # Confirmed columns: ticker, company_name, returns_ret_1d...returns_ret_5y, avg_ret_30d, ...
     percent_cols = [
         "returns_ret_1d","returns_ret_3d","returns_ret_7d","returns_ret_30d",
         "returns_ret_3m","returns_ret_6m","returns_ret_1y","returns_ret_3y","returns_ret_5y",
@@ -134,7 +129,6 @@ def load_clean_industry(
 def load_clean_sector(
     source: str, is_url: bool = True
 ) -> pd.DataFrame:
-    # Confirmed columns: sector, sector_ret_1d...sector_ret_5y, sector_avg_30d, ..., sector_count
     percent_cols = [
         "sector_ret_1d","sector_ret_3d","sector_ret_7d","sector_ret_30d",
         "sector_ret_3m","sector_ret_6m","sector_ret_1y","sector_ret_3y","sector_ret_5y",
@@ -161,13 +155,39 @@ def load_clean_sector(
     return df
 
 # =================================================
-# Example usage:
-# Replace these URLs/gids with your own
+# --- URLs for each Google Sheet (replace with your own) ---
 WATCHLIST_URL = "https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk/export?format=csv&gid=2026492216"
 INDUSTRY_URL  = "https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk/export?format=csv&gid=100734077"
 SECTOR_URL    = "https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk/export?format=csv&gid=140104095"
 
-# To load in your app:
-# wl_df = load_clean_watchlist(WATCHLIST_URL)
-# ind_df = load_clean_industry(INDUSTRY_URL)
-# sec_df = load_clean_sector(SECTOR_URL)
+# =================================================
+# --- Main all-in-one loader for dashboard ---
+def load_and_process():
+    """
+    Loads, cleans, and returns all sheets in a dictionary for the dashboard.
+    Returns:
+        {
+            "watchlist": pd.DataFrame,
+            "industry": pd.DataFrame,
+            "sector": pd.DataFrame,
+            "summary": dict
+        }
+    """
+    wl_df = load_clean_watchlist(WATCHLIST_URL)
+    ind_df = load_clean_industry(INDUSTRY_URL)
+    sec_df = load_clean_sector(SECTOR_URL)
+    summary = {
+        "total_stocks": int(len(wl_df)),
+        "total_sectors": int(len(sec_df)),
+        "blank_cells": int(wl_df.isna().sum().sum()),
+        "duplicates": int(wl_df.duplicated(subset=["ticker"]).sum()),
+        "source": "Google Sheet",
+        "data_hash": hash((len(wl_df), len(sec_df))),
+        "last_reload": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    return {
+        "watchlist": wl_df,
+        "industry": ind_df,
+        "sector": sec_df,
+        "summary": summary,
+    }
