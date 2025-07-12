@@ -1,712 +1,723 @@
 """
-filters.py – Ultimate Data Filtering Engine for M.A.N.T.R.A. Stock Intelligence System
-
-Production-grade filtering pipeline with bullet-proof error handling, infinite extensibility,
-and crystal-clear architecture. Built to last decades without modification.
-
-Version: 1.0.0-FINAL
-Status:  PRODUCTION-READY – DO NOT REWRITE
+filters.py - M.A.N.T.R.A. Dashboard Filters
+==========================================
+Flexible filtering system for stock screening
+Provides UI-ready filter components and logic
 """
 
-from __future__ import annotations
-
+import pandas as pd
+import numpy as np
 import logging
-import time
-import warnings
-from abc import ABC, abstractmethod
+from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import wraps
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
+
+# Import from constants
+from constants import (
+    SIGNAL_LEVELS, MARKET_CAP_RANGES, SECTOR_GROUPS,
+    PRICE_RANGE_FILTERS, PE_RANGES, RISK_SCORES
 )
 
-import numpy as np
-import pandas as pd
-
-# ─────────────────────────────────────────────────────────────
-# Logger
-# ─────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
-# ─────────────────────────────────────────────────────────────
-# Enums
-# ─────────────────────────────────────────────────────────────
-class FilterMode(Enum):
-    """Logical operators for combining filters."""
-    AND = "and"
-    OR = "or"
-    NOT = "not"
-    XOR = "xor"
+# ============================================================================
+# FILTER TYPES
+# ============================================================================
 
+class FilterType(Enum):
+    """Types of filters available"""
+    SINGLE_SELECT = "single_select"
+    MULTI_SELECT = "multi_select"
+    RANGE = "range"
+    BOOLEAN = "boolean"
+    TEXT = "text"
+    NUMERIC = "numeric"
 
-class ComparisonOperator(Enum):
-    """Supported comparison operators for ColumnFilter."""
-    GT = ">"
-    GTE = ">="
-    LT = "<"
-    LTE = "<="
-    EQ = "=="
-    NE = "!="
-    BETWEEN = "between"
-    IN = "in"
-    NOT_IN = "not_in"
-    CONTAINS = "contains"
-    REGEX = "regex"
-
-# ─────────────────────────────────────────────────────────────
-# Dataclass helpers
-# ─────────────────────────────────────────────────────────────
 @dataclass
-class FilterResult:
-    """
-    Container for pipeline output plus rich metrics.
-    """
-    data: pd.DataFrame
-    metrics: Dict[str, int] = field(default_factory=dict)
-    warnings: List[str] = field(default_factory=list)
-    applied_filters: List[str] = field(default_factory=list)
-    execution_time_ms: float = 0.0
+class FilterDefinition:
+    """Definition of a single filter"""
+    name: str
+    display_name: str
+    column: str
+    filter_type: FilterType
+    options: Optional[List] = None
+    range: Optional[Tuple[float, float]] = None
+    default: Any = None
+    description: str = ""
+    format_func: Optional[callable] = None
 
-    # Convenience properties
-    @property
-    def rows_filtered(self) -> int:
-        if {"initial", "final"} <= self.metrics.keys():
-            return self.metrics["initial"] - self.metrics["final"]
-        return 0
+# ============================================================================
+# PREDEFINED FILTERS
+# ============================================================================
 
-    @property
-    def filter_rate(self) -> float:
-        if self.metrics.get("initial", 0):
-            return self.rows_filtered / self.metrics["initial"] * 100
-        return 0.0
-
-# ─────────────────────────────────────────────────────────────
-# Decorators
-# ─────────────────────────────────────────────────────────────
-def safe_filter(func: Callable) -> Callable:
-    """
-    Ensure individual filters never crash the pipeline.
-    """
-
-    @wraps(func)
-    def wrapper(df: pd.DataFrame, *args, **kwargs) -> pd.DataFrame:
-        if df is None or df.empty:
-            logger.warning("%s: received empty DataFrame", func.__name__)
-            return df if df is not None else pd.DataFrame()
-
-        try:
-            result = func(df, *args, **kwargs)
-            if result is None:
-                logger.error("%s: filter returned None; using original DataFrame", func.__name__)
-                return df
-            return result
-        except Exception as exc:  # noqa: BLE001
-            logger.error("%s: %s — returning original DataFrame", func.__name__, exc)
-            return df
-
-    return wrapper
-
-# ─────────────────────────────────────────────────────────────
-# Base class
-# ─────────────────────────────────────────────────────────────
-class FilterBase(ABC):
-    """
-    Abstract base for all filters.
-    """
-
-    def __init__(self, name: str, enabled: bool = True) -> None:
-        self.name = name
-        self.enabled = enabled
-        self._execution_count = 0
-        self._total_rows_filtered = 0
-
-    @abstractmethod
-    def apply(self, df: pd.DataFrame, **kwargs) -> pd.DataFrame: ...
-
-    # Optional helpers
-    def get_stats(self) -> Dict[str, Any]:
+class FilterLibrary:
+    """Library of all available filters"""
+    
+    @staticmethod
+    def get_all_filters() -> Dict[str, FilterDefinition]:
+        """Get all filter definitions"""
         return {
-            "name": self.name,
-            "enabled": self.enabled,
-            "execution_count": self._execution_count,
-            "total_rows_filtered": self._total_rows_filtered,
+            # Signal filters
+            "decision": FilterDefinition(
+                name="decision",
+                display_name="Signal",
+                column="decision",
+                filter_type=FilterType.MULTI_SELECT,
+                options=["BUY", "WATCH", "NEUTRAL", "AVOID"],
+                default=["BUY", "WATCH"],
+                description="Trading decision signal"
+            ),
+            
+            "composite_score": FilterDefinition(
+                name="composite_score",
+                display_name="Composite Score",
+                column="composite_score",
+                filter_type=FilterType.RANGE,
+                range=(0, 100),
+                default=(70, 100),
+                description="Overall signal strength"
+            ),
+            
+            # Market cap filters
+            "market_cap_category": FilterDefinition(
+                name="market_cap_category",
+                display_name="Market Cap",
+                column="category",
+                filter_type=FilterType.MULTI_SELECT,
+                options=["Large Cap", "Mid Cap", "Small Cap", "Micro Cap"],
+                default=["Large Cap", "Mid Cap", "Small Cap"],
+                description="Market capitalization category"
+            ),
+            
+            "market_cap_range": FilterDefinition(
+                name="market_cap_range",
+                display_name="Market Cap (Cr)",
+                column="market_cap",
+                filter_type=FilterType.RANGE,
+                range=(0, 1000000),
+                default=(100, 1000000),
+                description="Market cap in Crores",
+                format_func=lambda x: f"₹{x:,.0f} Cr"
+            ),
+            
+            # Sector filters
+            "sector": FilterDefinition(
+                name="sector",
+                display_name="Sector",
+                column="sector",
+                filter_type=FilterType.MULTI_SELECT,
+                options=[],  # Will be populated dynamically
+                default=[],
+                description="Business sector"
+            ),
+            
+            "sector_group": FilterDefinition(
+                name="sector_group",
+                display_name="Sector Group",
+                column="sector",
+                filter_type=FilterType.MULTI_SELECT,
+                options=list(SECTOR_GROUPS.keys()),
+                default=[],
+                description="Sector grouping (Defensive, Cyclical, etc.)"
+            ),
+            
+            # Price filters
+            "price_range": FilterDefinition(
+                name="price_range",
+                display_name="Price Range",
+                column="price",
+                filter_type=FilterType.RANGE,
+                range=(0, 100000),
+                default=(10, 100000),
+                description="Stock price range",
+                format_func=lambda x: f"₹{x:,.0f}"
+            ),
+            
+            "price_tier": FilterDefinition(
+                name="price_tier",
+                display_name="Price Category",
+                column="price_tier",
+                filter_type=FilterType.MULTI_SELECT,
+                options=["<50", "50-100", "100-250", "250-500", "500-1K", "1K-2K", "2K-5K", "5K-10K", ">10K"],
+                default=[],
+                description="Price tier categories"
+            ),
+            
+            # Performance filters
+            "return_30d": FilterDefinition(
+                name="return_30d",
+                display_name="30-Day Return (%)",
+                column="ret_30d",
+                filter_type=FilterType.RANGE,
+                range=(-50, 200),
+                default=(-10, 200),
+                description="30-day price performance",
+                format_func=lambda x: f"{x:+.1f}%"
+            ),
+            
+            "momentum_score": FilterDefinition(
+                name="momentum_score",
+                display_name="Momentum Score",
+                column="momentum_score",
+                filter_type=FilterType.RANGE,
+                range=(0, 100),
+                default=(0, 100),
+                description="Momentum strength indicator"
+            ),
+            
+            # Value filters
+            "pe_ratio": FilterDefinition(
+                name="pe_ratio",
+                display_name="P/E Ratio",
+                column="pe",
+                filter_type=FilterType.RANGE,
+                range=(-100, 200),
+                default=(0, 50),
+                description="Price to Earnings ratio"
+            ),
+            
+            "value_score": FilterDefinition(
+                name="value_score",
+                display_name="Value Score",
+                column="value_score",
+                filter_type=FilterType.RANGE,
+                range=(0, 100),
+                default=(0, 100),
+                description="Value attractiveness score"
+            ),
+            
+            # Volume filters
+            "volume_min": FilterDefinition(
+                name="volume_min",
+                display_name="Min Daily Volume",
+                column="volume_1d",
+                filter_type=FilterType.NUMERIC,
+                default=50000,
+                description="Minimum daily trading volume"
+            ),
+            
+            "relative_volume": FilterDefinition(
+                name="relative_volume",
+                display_name="Relative Volume",
+                column="rvol",
+                filter_type=FilterType.RANGE,
+                range=(0, 10),
+                default=(0.5, 10),
+                description="Volume vs average",
+                format_func=lambda x: f"{x:.1f}x"
+            ),
+            
+            # Risk filters
+            "risk_level": FilterDefinition(
+                name="risk_level",
+                display_name="Risk Level",
+                column="risk_level",
+                filter_type=FilterType.MULTI_SELECT,
+                options=["Very Low", "Low", "Moderate", "High", "Very High"],
+                default=["Very Low", "Low", "Moderate"],
+                description="Risk assessment level"
+            ),
+            
+            "risk_score": FilterDefinition(
+                name="risk_score",
+                display_name="Risk Score",
+                column="risk_score",
+                filter_type=FilterType.RANGE,
+                range=(0, 100),
+                default=(0, 70),
+                description="Numerical risk score"
+            ),
+            
+            # Technical filters
+            "52w_position": FilterDefinition(
+                name="52w_position",
+                display_name="52-Week Position (%)",
+                column="position_52w",
+                filter_type=FilterType.RANGE,
+                range=(0, 100),
+                default=(0, 100),
+                description="Position in 52-week range"
+            ),
+            
+            "above_200_dma": FilterDefinition(
+                name="above_200_dma",
+                display_name="Above 200 DMA",
+                column="trading_under",
+                filter_type=FilterType.BOOLEAN,
+                default=None,
+                description="Trading above 200-day moving average"
+            ),
+            
+            # Pattern filters
+            "has_edge": FilterDefinition(
+                name="has_edge",
+                display_name="Has Edge Setup",
+                column="edge_count",
+                filter_type=FilterType.BOOLEAN,
+                default=None,
+                description="Has identified edge setup"
+            ),
+            
+            "anomaly_detected": FilterDefinition(
+                name="anomaly_detected",
+                display_name="Anomaly Detected",
+                column="anomaly_count",
+                filter_type=FilterType.BOOLEAN,
+                default=None,
+                description="Has detected anomalies"
+            ),
+            
+            # EPS filters
+            "eps_growth": FilterDefinition(
+                name="eps_growth",
+                display_name="EPS Growth (%)",
+                column="eps_change_pct",
+                filter_type=FilterType.RANGE,
+                range=(-100, 500),
+                default=(-20, 500),
+                description="Earnings per share growth",
+                format_func=lambda x: f"{x:+.1f}%"
+            ),
+            
+            # Search filter
+            "search": FilterDefinition(
+                name="search",
+                display_name="Search",
+                column="ticker",
+                filter_type=FilterType.TEXT,
+                default="",
+                description="Search by ticker or company name"
+            )
         }
 
-    def validate_columns(
-        self, df: pd.DataFrame, required: Sequence[str]
-    ) -> Tuple[bool, List[str]]:
-        missing = [c for c in required if c not in df.columns]
-        return not missing, missing
+# ============================================================================
+# FILTER ENGINE
+# ============================================================================
 
-# ─────────────────────────────────────────────────────────────
-# Concrete filters
-# ─────────────────────────────────────────────────────────────
-class ColumnFilter(FilterBase):
+class FilterEngine:
     """
-    Single-column filter with rich operator support.
+    Engine for applying filters to dataframes
     """
-
-    def __init__(
-        self,
-        name: str,
-        column: str,
-        operator: Union[str, ComparisonOperator],
-        value: Any,
-        *,
-        null_handling: str = "exclude",  # exclude | include | treat_as_zero
-        case_sensitive: bool = False,
-        enabled: bool = True,
-    ) -> None:
-        super().__init__(name, enabled)
-        self.column = column
-        self.operator = (
-            operator if isinstance(operator, ComparisonOperator) else ComparisonOperator(operator)
-        )
-        self.value = value
-        self.null_handling = null_handling
-        self.case_sensitive = case_sensitive
-
-    @safe_filter
-    def apply(self, df: pd.DataFrame, **_) -> pd.DataFrame:  # noqa: D401
-        if not self.enabled or self.column not in df.columns:
-            return df
-
-        self._execution_count += 1
-        initial_len = len(df)
-
-        col = df[self.column].copy()
-        null_mask = col.isna()
-
-        # ── handle nulls
-        if self.null_handling == "exclude":
-            valid = ~null_mask
-        elif self.null_handling == "include":
-            valid = pd.Series(True, index=df.index)
-        else:  # treat_as_zero
-            col = col.fillna(0)
-            valid = pd.Series(True, index=df.index)
-
-        # ── operator logic
-        op = self.operator
-        if op == ComparisonOperator.GT:
-            mask = valid & (col > self.value)
-        elif op == ComparisonOperator.GTE:
-            mask = valid & (col >= self.value)
-        elif op == ComparisonOperator.LT:
-            mask = valid & (col < self.value)
-        elif op == ComparisonOperator.LTE:
-            mask = valid & (col <= self.value)
-        elif op == ComparisonOperator.EQ:
-            mask = valid & (col == self.value)
-        elif op == ComparisonOperator.NE:
-            mask = valid & (col != self.value)
-        elif op == ComparisonOperator.BETWEEN:
-            if isinstance(self.value, Sequence) and len(self.value) == 2:
-                lo, hi = self.value
-                mask = valid & (col >= lo) & (col <= hi)
-            else:
-                logger.error("%s: BETWEEN requires [min, max] list/tuple", self.name)
-                return df
-        elif op == ComparisonOperator.IN:
-            vals = self.value if isinstance(self.value, (list, set, tuple)) else [self.value]
-            mask = valid & col.isin(vals)
-        elif op == ComparisonOperator.NOT_IN:
-            vals = self.value if isinstance(self.value, (list, set, tuple)) else [self.value]
-            mask = valid & ~col.isin(vals)
-        elif op == ComparisonOperator.CONTAINS:
-            pattern = str(self.value)
-            if not self.case_sensitive:
-                col = col.astype(str).str.lower()
-                pattern = pattern.lower()
-            mask = valid & col.astype(str).str.contains(pattern, na=False)
-        elif op == ComparisonOperator.REGEX:
-            mask = valid & col.astype(str).str.match(
-                self.value, case=self.case_sensitive, na=False
-            )
-        else:  # pragma: no cover
-            logger.error("%s: unknown operator %s", self.name, op)
-            return df
-
-        result = df[mask]
-        self._total_rows_filtered += initial_len - len(result)
-        return result
-
-
-class MultiColumnFilter(FilterBase):
-    """
-    Combine several FilterBase objects with a boolean mode.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        filters: List[FilterBase],
-        mode: FilterMode = FilterMode.AND,
-        *,
-        enabled: bool = True,
-    ) -> None:
-        super().__init__(name, enabled)
-        self.filters = filters
-        self.mode = mode
-
-    @safe_filter
-    def apply(self, df: pd.DataFrame, **kwargs) -> pd.DataFrame:
-        if not self.enabled or not self.filters:
-            return df
-
-        self._execution_count += 1
-        initial_len = len(df)
-
-        masks: List[pd.Series] = []
-        for f in self.filters:
-            if not f.enabled:
-                continue
-            filtered = f.apply(df, **kwargs)
-            masks.append(df.index.isin(filtered.index))
-
-        if not masks:
-            return df
-
-        # ── combine
-        if self.mode == FilterMode.AND:
-            combined = np.logical_and.reduce(masks)
-        elif self.mode == FilterMode.OR:
-            combined = np.logical_or.reduce(masks)
-        elif self.mode == FilterMode.NOT:
-            combined = ~masks[0]
-        elif self.mode == FilterMode.XOR:
-            combined = np.logical_xor.reduce(masks)
-        else:  # pragma: no cover
-            logger.error("%s: unknown mode %s", self.name, self.mode)
-            return df
-
-        result = df[combined]
-        self._total_rows_filtered += initial_len - len(result)
-        return result
-
-
-class CustomFilter(FilterBase):
-    """
-    Accepts an arbitrary callable(df) → filtered_df.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        filter_func: Callable[[pd.DataFrame], pd.DataFrame],
-        *,
-        enabled: bool = True,
-    ) -> None:
-        super().__init__(name, enabled)
-        self.filter_func = filter_func
-
-    @safe_filter
-    def apply(self, df: pd.DataFrame, **_) -> pd.DataFrame:
-        if not self.enabled:
-            return df
-
-        self._execution_count += 1
-        initial_len = len(df)
-
-        try:
-            result = self.filter_func(df)
-            if not isinstance(result, pd.DataFrame):
-                logger.error("%s: custom filter must return DataFrame", self.name)
-                return df
-            self._total_rows_filtered += initial_len - len(result)
-            return result
-        except Exception as exc:  # noqa: BLE001
-            logger.error("%s: custom filter error – %s", self.name, exc)
-            return df
-
-
-class PresetFilter(FilterBase):
-    """
-    Convenience wrapper around common multi-step strategies.
-    """
-
-    PRESETS: Dict[str, Dict[str, Any]] = {
-        "high_momentum": {
-            "filters": [
-                ("momentum_score", ComparisonOperator.GTE, 80),
-                ("final_score", ComparisonOperator.GTE, 70),
-            ],
-            "mode": FilterMode.AND,
-        },
-        "value_plays": {
-            "filters": [
-                ("pe", ComparisonOperator.GT, 0),
-                ("pe", ComparisonOperator.LT, 25),
-                ("eps_score", ComparisonOperator.GTE, 70),
-            ],
-            "mode": FilterMode.AND,
-        },
-        "breakout_candidates": {
-            "filters": [
-                ("from_high_pct", ComparisonOperator.BETWEEN, [0, 10]),
-                ("vol_ratio_1d_90d", ComparisonOperator.GTE, 1.5),
-                ("momentum_score", ComparisonOperator.GTE, 60),
-            ],
-            "mode": FilterMode.AND,
-        },
-        "oversold_quality": {
-            "filters": [
-                ("rsi", ComparisonOperator.LT, 30),
-                ("final_score", ComparisonOperator.GTE, 70),
-                ("from_low_pct", ComparisonOperator.LTE, 20),
-            ],
-            "mode": FilterMode.AND,
-        },
-        "volume_surge": {
-            "filters": [
-                ("vol_ratio_1d_90d", ComparisonOperator.GTE, 3),
-                ("price", ComparisonOperator.GT, 0),
-            ],
-            "mode": FilterMode.AND,
-        },
-    }
-
-    def __init__(self, preset_name: str, *, enabled: bool = True) -> None:
-        if preset_name not in self.PRESETS:
-            raise ValueError(
-                f"Unknown preset {preset_name}. Choices: {list(self.PRESETS.keys())}"
-            )
-        super().__init__(f"preset_{preset_name}", enabled)
-        self.preset_name = preset_name
-        self._build_filters()
-
-    def _build_filters(self) -> None:
-        cfg = self.PRESETS[self.preset_name]
-        flts = [
-            ColumnFilter(
-                f"{self.preset_name}_{i}", col, op, val
-            )
-            for i, (col, op, val) in enumerate(cfg["filters"])
-        ]
-        self.multi = MultiColumnFilter(self.preset_name, flts, cfg["mode"])
-
-    @safe_filter
-    def apply(self, df: pd.DataFrame, **kwargs) -> pd.DataFrame:
-        if not self.enabled:
-            return df
-        return self.multi.apply(df, **kwargs)
-
-# ─────────────────────────────────────────────────────────────
-# Pipeline
-# ─────────────────────────────────────────────────────────────
-class FilterPipeline:
-    """
-    Executes a sequence of filters with full telemetry.
-    """
-
-    def __init__(
-        self,
-        *,
-        track_metrics: bool = True,
-        warn_on_empty: bool = True,
-        debug: bool = False,
-    ) -> None:
-        self.track_metrics = track_metrics
-        self.warn_on_empty = warn_on_empty
-        self.debug = debug
-        self.filters: List[FilterBase] = []
-        self._history: List[FilterResult] = []
-
-    # Builder helpers
-    def add_filter(self, f: FilterBase) -> "FilterPipeline":
-        self.filters.append(f)
-        return self
-
-    def remove_filter(self, name: str) -> bool:
-        idx = next((i for i, f in enumerate(self.filters) if f.name == name), None)
-        if idx is None:
-            return False
-        self.filters.pop(idx)
-        return True
-
-    def clear_filters(self) -> "FilterPipeline":
-        self.filters.clear()
-        return self
-
-    # Core
-    def apply(
+    
+    def __init__(self):
+        self.filters = FilterLibrary.get_all_filters()
+        self.active_filters = {}
+        
+    def apply_filters(
         self,
         df: pd.DataFrame,
-        *,
-        return_metrics: bool = False,
-        **kwargs,
-    ) -> Union[pd.DataFrame, FilterResult]:
-        start = time.time()
-
-        if df is None or df.empty:
-            result = FilterResult(
-                data=df if df is not None else pd.DataFrame(),
-                warnings=["Input DataFrame is empty"],
-            )
-            return result if return_metrics else result.data
-
-        result = FilterResult(data=df.copy())
-        result.metrics["initial"] = len(df)
-        current = df.copy()
-
-        for f in self.filters:
-            if not f.enabled:
+        filter_values: Dict[str, Any]
+    ) -> pd.DataFrame:
+        """
+        Apply multiple filters to dataframe
+        
+        Args:
+            df: DataFrame to filter
+            filter_values: Dictionary of filter name -> value
+            
+        Returns:
+            Filtered DataFrame
+        """
+        if df.empty:
+            return df
+            
+        filtered_df = df.copy()
+        self.active_filters = filter_values.copy()
+        
+        for filter_name, filter_value in filter_values.items():
+            if filter_value is None or filter_value == "" or filter_value == []:
                 continue
-
-            before = len(current)
-            if self.debug:
-                logger.debug("Applying filter %s", f.name)
-
-            current = f.apply(current, **kwargs)
-
-            if self.track_metrics:
-                result.metrics[f"after_{f.name}"] = len(current)
-                result.applied_filters.append(f.name)
-
-            if current.empty and self.warn_on_empty:
-                warn = f"Filter '{f.name}' eliminated all rows"
-                result.warnings.append(warn)
-                if self.debug:
-                    logger.warning(warn)
-
-            if self.debug and before != len(current):
-                logger.debug("  %s: %d → %d rows", f.name, before, len(current))
-
-        result.data = current
-        result.metrics["final"] = len(current)
-        result.execution_time_ms = (time.time() - start) * 1000
-        self._history.append(result)
-        self._history = self._history[-100:]  # keep last 100
-
-        return result if return_metrics else result.data
-
-    # Telemetry
-    def get_pipeline_stats(self) -> Dict[str, Any]:
+                
+            if filter_name not in self.filters:
+                logger.warning(f"Unknown filter: {filter_name}")
+                continue
+                
+            filter_def = self.filters[filter_name]
+            filtered_df = self._apply_single_filter(filtered_df, filter_def, filter_value)
+        
+        logger.info(f"Filtered {len(df)} rows to {len(filtered_df)} rows")
+        
+        return filtered_df
+    
+    def _apply_single_filter(
+        self,
+        df: pd.DataFrame,
+        filter_def: FilterDefinition,
+        value: Any
+    ) -> pd.DataFrame:
+        """Apply a single filter based on its type"""
+        
+        column = filter_def.column
+        if column not in df.columns:
+            logger.warning(f"Column '{column}' not found in dataframe")
+            return df
+        
+        if filter_def.filter_type == FilterType.MULTI_SELECT:
+            if filter_def.name == "sector_group":
+                # Special handling for sector groups
+                all_sectors = []
+                for group in value:
+                    if group in SECTOR_GROUPS:
+                        all_sectors.extend(SECTOR_GROUPS[group])
+                return df[df[column].isin(all_sectors)]
+            else:
+                return df[df[column].isin(value)]
+        
+        elif filter_def.filter_type == FilterType.SINGLE_SELECT:
+            return df[df[column] == value]
+        
+        elif filter_def.filter_type == FilterType.RANGE:
+            min_val, max_val = value
+            mask = pd.Series(True, index=df.index)
+            if min_val is not None:
+                mask &= df[column] >= min_val
+            if max_val is not None:
+                mask &= df[column] <= max_val
+            return df[mask]
+        
+        elif filter_def.filter_type == FilterType.NUMERIC:
+            return df[df[column] >= value]
+        
+        elif filter_def.filter_type == FilterType.BOOLEAN:
+            if filter_def.name == "above_200_dma":
+                # Special handling for DMA filter
+                if value:
+                    return df[df[column].isna() | (df[column] == "")]
+                else:
+                    return df[df[column].notna() & (df[column] != "")]
+            else:
+                # Generic boolean handling
+                if value:
+                    return df[df[column] > 0]
+                else:
+                    return df[df[column] == 0]
+        
+        elif filter_def.filter_type == FilterType.TEXT:
+            # Case-insensitive search in ticker and company name
+            mask = df[column].str.contains(value, case=False, na=False)
+            if 'company_name' in df.columns:
+                mask |= df['company_name'].str.contains(value, case=False, na=False)
+            return df[mask]
+        
+        return df
+    
+    def get_filter_options(self, df: pd.DataFrame, filter_name: str) -> List:
+        """Get available options for a filter based on current data"""
+        if filter_name not in self.filters:
+            return []
+        
+        filter_def = self.filters[filter_name]
+        column = filter_def.column
+        
+        if column not in df.columns:
+            return []
+        
+        if filter_def.filter_type in [FilterType.MULTI_SELECT, FilterType.SINGLE_SELECT]:
+            # Get unique values from data
+            unique_values = df[column].dropna().unique()
+            return sorted(unique_values)
+        
+        return filter_def.options or []
+    
+    def get_filter_stats(self, df: pd.DataFrame, filter_name: str) -> Dict:
+        """Get statistics for a filter"""
+        if filter_name not in self.filters:
+            return {}
+        
+        filter_def = self.filters[filter_name]
+        column = filter_def.column
+        
+        if column not in df.columns:
+            return {}
+        
         stats = {
-            "total_filters": len(self.filters),
-            "enabled_filters": sum(f.enabled for f in self.filters),
-            "filter_details": [f.get_stats() for f in self.filters],
-            "total_executions": len(self._history),
+            'total_count': len(df),
+            'non_null_count': df[column].notna().sum()
         }
-        if self._history:
-            stats.update(
-                {
-                    "avg_rows_filtered": round(
-                        np.mean([h.rows_filtered for h in self._history]), 2
-                    ),
-                    "avg_execution_time_ms": round(
-                        np.mean([h.execution_time_ms for h in self._history]), 2
-                    ),
-                    "total_warnings": sum(len(h.warnings) for h in self._history),
-                }
-            )
+        
+        if filter_def.filter_type == FilterType.RANGE:
+            stats.update({
+                'min': df[column].min(),
+                'max': df[column].max(),
+                'mean': df[column].mean(),
+                'median': df[column].median()
+            })
+        
+        elif filter_def.filter_type in [FilterType.MULTI_SELECT, FilterType.SINGLE_SELECT]:
+            value_counts = df[column].value_counts()
+            stats['value_distribution'] = value_counts.to_dict()
+        
         return stats
+    
+    def create_filter_summary(self) -> pd.DataFrame:
+        """Create summary of active filters"""
+        if not self.active_filters:
+            return pd.DataFrame()
+        
+        summary_data = []
+        for filter_name, value in self.active_filters.items():
+            if filter_name in self.filters:
+                filter_def = self.filters[filter_name]
+                summary_data.append({
+                    'Filter': filter_def.display_name,
+                    'Value': self._format_filter_value(filter_def, value),
+                    'Type': filter_def.filter_type.value
+                })
+        
+        return pd.DataFrame(summary_data)
+    
+    def _format_filter_value(self, filter_def: FilterDefinition, value: Any) -> str:
+        """Format filter value for display"""
+        if filter_def.format_func:
+            if isinstance(value, (list, tuple)):
+                return f"{filter_def.format_func(value[0])} - {filter_def.format_func(value[1])}"
+            else:
+                return filter_def.format_func(value)
+        
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value[:3]) + ("..." if len(value) > 3 else "")
+        elif isinstance(value, tuple):
+            return f"{value[0]} - {value[1]}"
+        elif isinstance(value, bool):
+            return "Yes" if value else "No"
+        else:
+            return str(value)
 
-# ─────────────────────────────────────────────────────────────
-# Builder helpers (for Streamlit UI, etc.)
-# ─────────────────────────────────────────────────────────────
-def _add_filters(pipeline: FilterPipeline, filters: Sequence[FilterBase]) -> None:
-    for f in filters:
-        pipeline.add_filter(f)
+# ============================================================================
+# PRESET FILTERS
+# ============================================================================
 
+class FilterPresets:
+    """Predefined filter combinations"""
+    
+    @staticmethod
+    def get_presets() -> Dict[str, Dict[str, Any]]:
+        """Get all filter presets"""
+        return {
+            "high_conviction_buys": {
+                "name": "High Conviction Buys",
+                "description": "Strong buy signals with low risk",
+                "filters": {
+                    "decision": ["BUY"],
+                    "composite_score": (80, 100),
+                    "risk_score": (0, 60),
+                    "volume_min": 100000
+                }
+            },
+            
+            "momentum_plays": {
+                "name": "Momentum Plays",
+                "description": "Stocks with strong momentum",
+                "filters": {
+                    "momentum_score": (75, 100),
+                    "return_30d": (10, 200),
+                    "above_200_dma": True
+                }
+            },
+            
+            "value_picks": {
+                "name": "Value Picks",
+                "description": "Undervalued opportunities",
+                "filters": {
+                    "pe_ratio": (0, 20),
+                    "value_score": (70, 100),
+                    "eps_growth": (0, 500)
+                }
+            },
+            
+            "large_cap_safe": {
+                "name": "Large Cap Safety",
+                "description": "Stable large cap stocks",
+                "filters": {
+                    "market_cap_category": ["Large Cap"],
+                    "risk_level": ["Very Low", "Low"],
+                    "above_200_dma": True
+                }
+            },
+            
+            "small_cap_growth": {
+                "name": "Small Cap Growth",
+                "description": "High growth small caps",
+                "filters": {
+                    "market_cap_category": ["Small Cap"],
+                    "eps_growth": (20, 500),
+                    "return_30d": (5, 200)
+                }
+            },
+            
+            "breakout_candidates": {
+                "name": "Breakout Candidates",
+                "description": "Potential breakout stocks",
+                "filters": {
+                    "52w_position": (70, 100),
+                    "relative_volume": (1.5, 10),
+                    "has_edge": True
+                }
+            },
+            
+            "turnaround_stories": {
+                "name": "Turnaround Stories",
+                "description": "Recovering from lows",
+                "filters": {
+                    "52w_position": (0, 30),
+                    "return_30d": (0, 200),
+                    "anomaly_detected": True
+                }
+            },
+            
+            "defensive_income": {
+                "name": "Defensive Income",
+                "description": "Stable dividend plays",
+                "filters": {
+                    "sector_group": ["Defensive"],
+                    "market_cap_range": (10000, 1000000),
+                    "risk_level": ["Very Low", "Low", "Moderate"]
+                }
+            }
+        }
 
-def build_basic_filters(
-    selected_tags: Optional[List[str]] = None,
-    min_score: float = 0,
-    selected_sectors: Optional[List[str]] = None,
-    selected_categories: Optional[List[str]] = None,
-) -> List[FilterBase]:
-    flts: List[FilterBase] = []
-    if selected_tags:
-        flts.append(ColumnFilter("tag_filter", "tag", ComparisonOperator.IN, selected_tags))
-    if min_score > 0:
-        flts.append(ColumnFilter("score_filter", "final_score", ComparisonOperator.GTE, min_score))
-    if selected_sectors:
-        flts.append(ColumnFilter("sector_filter", "sector", ComparisonOperator.IN, selected_sectors))
-    if selected_categories:
-        flts.append(
-            ColumnFilter("category_filter", "category", ComparisonOperator.IN, selected_categories)
-        )
-    return flts
+# ============================================================================
+# CONVENIENCE FUNCTIONS
+# ============================================================================
 
-
-def build_technical_filters(
-    dma_option: str = "No filter",
-    exclude_near_high: bool = False,
-    rsi_range: Optional[Tuple[float, float]] = None,
-) -> List[FilterBase]:
-    flts: List[FilterBase] = []
-
-    if dma_option == "Above 50D":
-        flts.append(
-            CustomFilter(
-                "dma_50_filter",
-                lambda df: df[df["price"] > df["sma_50d"]]
-                if {"price", "sma_50d"} <= set(df.columns)
-                else df,
-            )
-        )
-    elif dma_option == "Above 200D":
-        flts.append(
-            CustomFilter(
-                "dma_200_filter",
-                lambda df: df[df["price"] > df["sma_200d"]]
-                if {"price", "sma_200d"} <= set(df.columns)
-                else df,
-            )
-        )
-
-    if exclude_near_high:
-        flts.append(
-            ColumnFilter("exclude_high", "from_high_pct", ComparisonOperator.GT, 5),
-        )
-
-    if rsi_range and len(rsi_range) == 2:
-        flts.append(ColumnFilter("rsi_filter", "rsi", ComparisonOperator.BETWEEN, rsi_range))
-
-    return flts
-
-
-def build_fundamental_filters(
-    eps_growth_only: bool = False,
-    pe_range: Optional[Tuple[float, float]] = None,
-    min_roe: Optional[float] = None,
-) -> List[FilterBase]:
-    flts: List[FilterBase] = []
-
-    if eps_growth_only:
-        flts.append(ColumnFilter("eps_filter", "eps_score", ComparisonOperator.GTE, 60))
-
-    if pe_range and len(pe_range) == 2:
-        flts.append(
-            MultiColumnFilter(
-                "pe_range_filter",
-                [
-                    ColumnFilter("pe_min", "pe", ComparisonOperator.GTE, pe_range[0]),
-                    ColumnFilter("pe_max", "pe", ComparisonOperator.LTE, pe_range[1]),
-                    ColumnFilter("pe_valid", "pe", ComparisonOperator.GT, 0),
-                ],
-                FilterMode.AND,
-            )
-        )
-
-    if min_roe is not None:
-        flts.append(ColumnFilter("roe_filter", "roe", ComparisonOperator.GTE, min_roe))
-
-    return flts
-
-# ─────────────────────────────────────────────────────────────
-# High-level helper
-# ─────────────────────────────────────────────────────────────
-def apply_smart_filters(
+def apply_filters(
     df: pd.DataFrame,
-    *,
-    selected_tags: Optional[List[str]] = None,
-    min_score: float = 0,
-    selected_sectors: Optional[List[str]] = None,
-    selected_categories: Optional[List[str]] = None,
-    dma_option: str = "No filter",
-    eps_only: bool = False,
-    exclude_high: bool = False,
-    anomaly_only: bool = False,
-    preset: str = "None",
-    search_ticker: str = "",
-    sort_by: str = "final_score",
-    ascending: bool = False,
-    custom_filters: Optional[List[FilterBase]] = None,
-    debug: bool = False,
-    return_metrics: bool = False,
-) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, int]]]:
-    pipeline = FilterPipeline(track_metrics=True, warn_on_empty=True, debug=debug)
+    **filter_kwargs
+) -> pd.DataFrame:
+    """
+    Apply filters to dataframe using kwargs
+    
+    Example:
+        filtered = apply_filters(df, decision=['BUY'], pe_ratio=(0, 25))
+    """
+    engine = FilterEngine()
+    return engine.apply_filters(df, filter_kwargs)
 
-    _add_filters(pipeline, build_basic_filters(selected_tags, min_score, selected_sectors, selected_categories))
-    _add_filters(pipeline, build_technical_filters(dma_option, exclude_high))
-    _add_filters(pipeline, build_fundamental_filters(eps_only))
+def get_filter_preset(
+    df: pd.DataFrame,
+    preset_name: str
+) -> pd.DataFrame:
+    """Apply a preset filter combination"""
+    presets = FilterPresets.get_presets()
+    
+    if preset_name not in presets:
+        logger.error(f"Unknown preset: {preset_name}")
+        return df
+    
+    preset = presets[preset_name]
+    engine = FilterEngine()
+    
+    return engine.apply_filters(df, preset['filters'])
 
-    if anomaly_only:
-        pipeline.add_filter(ColumnFilter("anomaly_filter", "anomaly", ComparisonOperator.EQ, True))
-
-    if preset and preset.lower() != "none":
-        try:
-            pipeline.add_filter(PresetFilter(preset.lower().replace(" ", "_")))
-        except ValueError:
-            logger.warning("Unknown preset: %s", preset)
-
-    if search_ticker:
-        pipeline.add_filter(
-            ColumnFilter(
-                "search_filter",
-                "ticker",
-                ComparisonOperator.CONTAINS,
-                search_ticker,
-                case_sensitive=False,
-            )
+def create_streamlit_filters(
+    st,
+    df: pd.DataFrame,
+    sidebar: bool = True
+) -> Dict[str, Any]:
+    """
+    Create Streamlit filter widgets
+    
+    Args:
+        st: Streamlit module
+        df: DataFrame to filter
+        sidebar: Whether to use sidebar
+        
+    Returns:
+        Dictionary of filter values
+    """
+    container = st.sidebar if sidebar else st
+    engine = FilterEngine()
+    filter_values = {}
+    
+    # Add filter presets
+    with container.expander("Quick Filters", expanded=False):
+        preset = st.selectbox(
+            "Select Preset",
+            ["None"] + list(FilterPresets.get_presets().keys()),
+            format_func=lambda x: x if x == "None" else FilterPresets.get_presets()[x]['name']
         )
+        
+        if preset != "None":
+            return FilterPresets.get_presets()[preset]['filters']
+    
+    # Individual filters
+    with container.expander("Custom Filters", expanded=True):
+        # Decision filter
+        filter_values['decision'] = st.multiselect(
+            "Signal",
+            options=["BUY", "WATCH", "NEUTRAL", "AVOID"],
+            default=["BUY", "WATCH"]
+        )
+        
+        # Score filter
+        score_range = st.slider(
+            "Composite Score",
+            min_value=0,
+            max_value=100,
+            value=(70, 100),
+            step=5
+        )
+        filter_values['composite_score'] = score_range
+        
+        # Market cap filter
+        filter_values['market_cap_category'] = st.multiselect(
+            "Market Cap",
+            options=["Large Cap", "Mid Cap", "Small Cap"],
+            default=["Large Cap", "Mid Cap", "Small Cap"]
+        )
+        
+        # Sector filter
+        available_sectors = sorted(df['sector'].unique()) if 'sector' in df.columns else []
+        filter_values['sector'] = st.multiselect(
+            "Sectors",
+            options=available_sectors,
+            default=[]
+        )
+        
+        # Risk filter
+        risk_range = st.slider(
+            "Risk Score",
+            min_value=0,
+            max_value=100,
+            value=(0, 70),
+            step=5
+        )
+        filter_values['risk_score'] = risk_range
+        
+        # Volume filter
+        filter_values['volume_min'] = st.number_input(
+            "Min Daily Volume",
+            min_value=0,
+            value=50000,
+            step=10000
+        )
+        
+    # Search box (always visible)
+    filter_values['search'] = container.text_input(
+        "Search Ticker/Company",
+        value="",
+        placeholder="TCS, Infosys..."
+    )
+    
+    # Remove empty filters
+    filter_values = {k: v for k, v in filter_values.items() if v}
+    
+    return filter_values
 
-    if custom_filters:
-        _add_filters(pipeline, custom_filters)
+# ============================================================================
+# MAIN
+# ============================================================================
 
-    result = pipeline.apply(df, return_metrics=True)
-    if sort_by in result.data.columns:
-        result.data = result.data.sort_values(sort_by, ascending=ascending)
-
-    if return_metrics:
-        return result.data, result.metrics
-    return result.data
-
-# ─────────────────────────────────────────────────────────────
-# Quick utilities
-# ─────────────────────────────────────────────────────────────
-def _unique(
-    df: pd.DataFrame, column: str, *, dropna: bool = True, sort: bool = True
-) -> List[str]:
-    if column not in df.columns:
-        return []
-    vals = df[column]
-    if dropna:
-        vals = vals.dropna()
-    vals = vals.astype(str).str.strip()
-    uniq = [v for v in vals.unique() if v and v != "nan"]
-    return sorted(uniq) if sort else uniq
-
-
-get_unique_tags = lambda df: _unique(df, "tag")  # noqa: E731
-get_unique_sectors = lambda df: _unique(df, "sector")  # noqa: E731
-get_unique_categories = lambda df: _unique(df, "category")  # noqa: E731
-
-
-def validate_dataframe(
-    df: Optional[pd.DataFrame],
-    required_columns: Optional[Sequence[str]] = None,
-    *,
-    min_rows: int = 0,
-) -> Tuple[bool, List[str]]:
-    issues: List[str] = []
-
-    if df is None:
-        return False, ["DataFrame is None"]
-    if df.empty:
-        issues.append("DataFrame is empty")
-    if len(df) < min_rows:
-        issues.append(f"DataFrame has {len(df)} rows; minimum {min_rows} required")
-    if required_columns:
-        missing = [c for c in required_columns if c not in df.columns]
-        if missing:
-            issues.append(f"Missing columns: {missing}")
-    return not issues, issues
-
-# ─────────────────────────────────────────────────────────────
-# Convenience global instance (optional)
-# ─────────────────────────────────────────────────────────────
-default_pipeline = FilterPipeline()
-
-# EOF – filters.py v1.0.0-FINAL
+if __name__ == "__main__":
+    print("="*60)
+    print("M.A.N.T.R.A. Dashboard Filters")
+    print("="*60)
+    print("\nFlexible filtering system for stock screening")
+    print("\nFilter Types:")
+    for filter_type in FilterType:
+        print(f"  - {filter_type.value}")
+    print("\nPreset Filters:")
+    for preset_name, preset in FilterPresets.get_presets().items():
+        print(f"  - {preset['name']}: {preset['description']}")
+    print("\nUse apply_filters() or create_streamlit_filters()")
+    print("="*60)
