@@ -1,814 +1,415 @@
 """
-signal_engine.py - M.A.N.T.R.A. Multi-Factor Scoring Engine
-==========================================================
-FINAL PRODUCTION VERSION
-Calculates composite scores using momentum, value, technical, volume, and sector factors.
-Handles all edge cases, Indian market specifics, and is 100% Streamlit-ready.
+signal_engine.py - M.A.N.T.R.A. Signal Engine
+============================================
+Fresh, clean implementation of multi-factor scoring
+Built from scratch for Indian stock market analysis
 """
 
 import logging
-import warnings
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union, Any
-from enum import Enum
-from collections import deque
-import threading
-from datetime import datetime
-
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 # Import constants
-try:
-    from constants import (
-        SCORE_WEIGHTS, MOMENTUM_THRESHOLDS, VALUE_THRESHOLDS,
-        TECHNICAL_THRESHOLDS, VOLUME_THRESHOLDS, SIGNAL_THRESHOLDS
-    )
-except ImportError:
-    # Fallback defaults
-    SCORE_WEIGHTS = {
-        'MOMENTUM': 0.30,
-        'VALUE': 0.25,
-        'TECHNICAL': 0.20,
-        'VOLUME': 0.15,
-        'SECTOR': 0.10
-    }
-    SIGNAL_THRESHOLDS = {'BUY': 85, 'WATCH': 70, 'AVOID': 50}
-
-# ============================================================================
-# LOGGING SETUP
-# ============================================================================
+from constants import (
+    SCORE_WEIGHTS, MOMENTUM_THRESHOLDS, VALUE_THRESHOLDS,
+    TECHNICAL_THRESHOLDS, VOLUME_THRESHOLDS, SIGNAL_THRESHOLDS
+)
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
 # ============================================================================
-# ENUMS & CONFIGURATION
-# ============================================================================
-
-class ScoringMethod(Enum):
-    """Available scoring methods"""
-    PERCENTILE = "percentile"
-    Z_SCORE = "z_score"
-    ROBUST = "robust"
-    LINEAR = "linear"
-    CUSTOM = "custom"
-
-class RegimeType(Enum):
-    """Market regime types affecting factor weights"""
-    BALANCED = "balanced"
-    MOMENTUM = "momentum"
-    VALUE = "value"
-    GROWTH = "growth"
-    QUALITY = "quality"
-    RECOVERY = "recovery"
-    VOLATILITY = "volatility"
-
-@dataclass
-class SignalConfig:
-    """Configuration for signal engine"""
-    # Score boundaries
-    default_score: float = 50.0
-    min_score: float = 0.0
-    max_score: float = 100.0
-    
-    # Data quality
-    min_valid_data_pct: float = 0.3
-    outlier_clip_pct: float = 1.0
-    
-    # Features
-    use_sector_relative: bool = True
-    track_explanations: bool = True
-    enable_advanced_factors: bool = True
-    
-    # Performance
-    cache_factor_scores: bool = True
-    parallel_processing: bool = False
-
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
-# Indian number format handling
-_INDIAN_UNITS = {
-    "CR": 1e7,     # Crore
-    "L": 1e5,      # Lakh  
-    "LAC": 1e5,    # Lakh alternate
-    "K": 1e3,      # Thousand
-    "M": 1e6,      # Million
-    "B": 1e9,      # Billion
-}
-
-def parse_indian_number(val: Any) -> float:
-    """Convert Indian format numbers like '₹3.4 Cr' to float"""
-    if pd.isna(val) or val is None:
-        return np.nan
-    
-    if isinstance(val, (int, float)):
-        return float(val)
-    
-    # Clean string
-    s = str(val).upper().strip()
-    s = s.replace("₹", "").replace("$", "").replace(",", "").strip()
-    
-    # Check for units
-    for unit, factor in _INDIAN_UNITS.items():
-        if s.endswith(unit):
-            try:
-                num_part = s.replace(unit, "").strip()
-                return float(num_part) * factor
-            except ValueError:
-                return np.nan
-    
-    # Try direct conversion
-    try:
-        return float(s)
-    except ValueError:
-        return np.nan
-
-def clean_percentage(val: Any) -> float:
-    """Clean percentage values, handling % symbol"""
-    if pd.isna(val):
-        return np.nan
-    
-    s = str(val).strip()
-    if s.endswith('%'):
-        try:
-            return float(s.replace('%', ''))
-        except ValueError:
-            return np.nan
-    
-    try:
-        val_float = float(val)
-        # If value is between -1 and 1, likely a decimal percentage
-        if -1 <= val_float <= 1 and val_float != 0:
-            return val_float * 100
-        return val_float
-    except ValueError:
-        return np.nan
-
-# ============================================================================
-# SIGNAL ENGINE CLASS
+# SIGNAL ENGINE
 # ============================================================================
 
 class SignalEngine:
     """
-    Multi-factor scoring engine for M.A.N.T.R.A.
-    Combines multiple signals to generate composite scores.
+    Multi-factor signal generation engine
+    Combines momentum, value, technical, volume, and sector signals
     """
     
-    def __init__(self, config: Optional[SignalConfig] = None):
-        self.config = config or SignalConfig()
-        self.factor_cache = {}
+    def __init__(self):
+        self.scores = {}
         self.explanations = {}
-        self.audit_log = deque(maxlen=1000)
-        self._lock = threading.Lock()
         
-        # Define factor specifications
-        self.factor_definitions = self._define_factors()
-        self.regime_weights = self._define_regime_weights()
+    def calculate_all_signals(
+        self, 
+        stocks_df: pd.DataFrame, 
+        sector_df: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """
+        Main method to calculate all signals and composite score
         
-        logger.info("Signal Engine initialized")
-    
-    def _define_factors(self) -> Dict[str, Dict[str, Any]]:
-        """Define all factor specifications"""
-        return {
-            # Core factors
-            "momentum": {
-                "columns": ["ret_1d", "ret_3d", "ret_7d", "ret_30d", "ret_3m"],
-                "weights": [0.05, 0.10, 0.20, 0.35, 0.30],
-                "method": ScoringMethod.PERCENTILE,
-                "higher_better": True,
-                "description": "Price momentum across multiple timeframes"
-            },
+        Args:
+            stocks_df: Stock data
+            sector_df: Sector performance data
             
-            "value": {
-                "columns": ["pe", "eps_current", "from_low_pct"],
-                "method": ScoringMethod.CUSTOM,
-                "higher_better": False,  # Lower PE is better
-                "description": "Valuation attractiveness"
-            },
+        Returns:
+            DataFrame with all scores and signals
+        """
+        if stocks_df.empty:
+            logger.warning("Empty dataframe provided")
+            return stocks_df
             
-            "technical": {
-                "columns": ["price", "sma_20d", "sma_50d", "sma_200d"],
-                "method": ScoringMethod.CUSTOM,
-                "description": "Technical indicator alignment"
-            },
-            
-            "volume": {
-                "columns": ["rvol", "vol_ratio_1d_90d", "vol_ratio_7d_90d"],
-                "weights": [0.50, 0.30, 0.20],
-                "method": ScoringMethod.ROBUST,
-                "higher_better": True,
-                "description": "Volume patterns and liquidity"
-            },
-            
-            "sector_strength": {
-                "columns": ["sector"],
-                "method": ScoringMethod.CUSTOM,
-                "description": "Sector relative performance"
-            },
-            
-            # Advanced factors (if enabled)
-            "momentum_quality": {
-                "columns": ["ret_3d", "ret_7d", "ret_30d", "ret_3m"],
-                "method": ScoringMethod.CUSTOM,
-                "description": "Consistency of momentum"
-            },
-            
-            "earnings_growth": {
-                "columns": ["eps_change_pct", "eps_current", "eps_last_qtr"],
-                "method": ScoringMethod.ROBUST,
-                "higher_better": True,
-                "description": "Earnings growth momentum"
-            },
-            
-            "risk_adjusted_return": {
-                "columns": ["ret_30d", "ret_7d", "ret_3d"],
-                "method": ScoringMethod.CUSTOM,
-                "description": "Return adjusted for volatility"
-            },
-            
-            "trend_strength": {
-                "columns": ["price", "sma_20d", "sma_50d", "sma_200d", "trading_under"],
-                "method": ScoringMethod.CUSTOM,
-                "description": "Strength of price trend"
-            },
-            
-            "relative_strength": {
-                "columns": ["from_high_pct", "from_low_pct", "position_52w"],
-                "method": ScoringMethod.CUSTOM,
-                "description": "Position within 52-week range"
-            }
-        }
-    
-    def _define_regime_weights(self) -> Dict[RegimeType, Dict[str, float]]:
-        """Define factor weights for different market regimes"""
+        df = stocks_df.copy()
         
-        # Base balanced weights
-        base_weights = {
-            "momentum": 0.30,
-            "value": 0.25,
-            "technical": 0.20,
-            "volume": 0.15,
-            "sector_strength": 0.10
-        }
+        # Calculate individual factor scores
+        logger.info("Calculating factor scores...")
         
-        # Advanced factor weights (distributed when enabled)
-        advanced_weights = {
-            "momentum_quality": 0.05,
-            "earnings_growth": 0.05,
-            "risk_adjusted_return": 0.05,
-            "trend_strength": 0.03,
-            "relative_strength": 0.02
-        }
+        # 1. Momentum Score
+        df['momentum_score'] = self._calculate_momentum_score(df)
         
-        # Regime-specific adjustments
-        regimes = {
-            RegimeType.BALANCED: {**base_weights},
-            
-            RegimeType.MOMENTUM: {
-                "momentum": 0.40,
-                "value": 0.15,
-                "technical": 0.25,
-                "volume": 0.15,
-                "sector_strength": 0.05
-            },
-            
-            RegimeType.VALUE: {
-                "momentum": 0.15,
-                "value": 0.40,
-                "technical": 0.15,
-                "volume": 0.15,
-                "sector_strength": 0.15
-            },
-            
-            RegimeType.GROWTH: {
-                "momentum": 0.25,
-                "value": 0.20,
-                "technical": 0.20,
-                "volume": 0.15,
-                "sector_strength": 0.20
-            },
-            
-            RegimeType.QUALITY: {
-                "momentum": 0.20,
-                "value": 0.30,
-                "technical": 0.25,
-                "volume": 0.10,
-                "sector_strength": 0.15
-            },
-            
-            RegimeType.RECOVERY: {
-                "momentum": 0.35,
-                "value": 0.30,
-                "technical": 0.15,
-                "volume": 0.15,
-                "sector_strength": 0.05
-            },
-            
-            RegimeType.VOLATILITY: {
-                "momentum": 0.20,
-                "value": 0.35,
-                "technical": 0.20,
-                "volume": 0.20,
-                "sector_strength": 0.05
-            }
-        }
+        # 2. Value Score
+        df['value_score'] = self._calculate_value_score(df)
         
-        # Add advanced weights if enabled
-        if self.config.enable_advanced_factors:
-            for regime_type, weights in regimes.items():
-                # Reduce core weights proportionally
-                total_advanced = sum(advanced_weights.values())
-                for key in weights:
-                    weights[key] *= (1 - total_advanced)
-                
-                # Add advanced weights
-                weights.update(advanced_weights)
+        # 3. Technical Score
+        df['technical_score'] = self._calculate_technical_score(df)
         
-        # Normalize to ensure sum = 1
-        for weights in regimes.values():
-            total = sum(weights.values())
-            for key in weights:
-                weights[key] /= total
+        # 4. Volume Score
+        df['volume_score'] = self._calculate_volume_score(df)
         
-        return regimes
+        # 5. Sector Score
+        df['sector_score'] = self._calculate_sector_score(df, sector_df)
+        
+        # Calculate composite score
+        df['composite_score'] = self._calculate_composite_score(df)
+        
+        # Add signal categories
+        df['signal'] = self._categorize_signals(df['composite_score'])
+        
+        # Add rankings
+        df['rank'] = df['composite_score'].rank(ascending=False, method='min')
+        df['percentile'] = df['composite_score'].rank(pct=True) * 100
+        
+        logger.info(f"Signal calculation complete for {len(df)} stocks")
+        
+        return df
     
     # ========================================================================
-    # SCORING METHODS
-    # ========================================================================
-    
-    def _score_percentile(self, series: pd.Series, higher_better: bool = True) -> pd.Series:
-        """Score based on percentile ranking"""
-        # Handle all NaN case
-        if series.isna().all():
-            return pd.Series(self.config.default_score, index=series.index)
-        
-        # Rank with NaN handling
-        ranks = series.rank(method='average', ascending=higher_better, pct=True)
-        scores = ranks * 100
-        
-        return scores.fillna(self.config.default_score).clip(
-            self.config.min_score, 
-            self.config.max_score
-        )
-    
-    def _score_z_score(self, series: pd.Series, higher_better: bool = True) -> pd.Series:
-        """Score based on z-score normalization"""
-        if series.isna().all() or series.std() == 0:
-            return pd.Series(self.config.default_score, index=series.index)
-        
-        z_scores = (series - series.mean()) / series.std()
-        if not higher_better:
-            z_scores = -z_scores
-        
-        # Convert to 0-100 scale using normal CDF
-        scores = stats.norm.cdf(z_scores) * 100
-        
-        return scores.fillna(self.config.default_score).clip(
-            self.config.min_score,
-            self.config.max_score
-        )
-    
-    def _score_robust(self, series: pd.Series, higher_better: bool = True) -> pd.Series:
-        """Robust scoring using median and IQR"""
-        if series.isna().all():
-            return pd.Series(self.config.default_score, index=series.index)
-        
-        # Use median and IQR for robustness
-        q1, q3 = series.quantile([0.25, 0.75])
-        iqr = q3 - q1
-        
-        if iqr == 0:
-            return pd.Series(self.config.default_score, index=series.index)
-        
-        # Robust z-score
-        robust_z = (series - series.median()) / (1.4826 * iqr)
-        if not higher_better:
-            robust_z = -robust_z
-        
-        # Clip extreme values
-        robust_z = robust_z.clip(-3, 3)
-        
-        # Convert to 0-100 scale
-        scores = (robust_z + 3) / 6 * 100
-        
-        return scores.fillna(self.config.default_score).clip(
-            self.config.min_score,
-            self.config.max_score
-        )
-    
-    # ========================================================================
-    # FACTOR CALCULATIONS
+    # MOMENTUM SCORING
     # ========================================================================
     
     def _calculate_momentum_score(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate momentum factor score"""
-        mom_cols = ["ret_1d", "ret_3d", "ret_7d", "ret_30d", "ret_3m"]
-        weights = [0.05, 0.10, 0.20, 0.35, 0.30]
-        
-        # Ensure columns exist
-        for col in mom_cols:
-            if col not in df.columns:
-                df[col] = np.nan
-        
-        # Calculate weighted momentum
-        mom_df = df[mom_cols].copy()
-        
-        # Clip extreme values
-        for col in mom_cols:
-            mom_df[col] = mom_df[col].clip(-50, 200)
-        
-        # Calculate weighted score
-        weighted_sum = pd.Series(0.0, index=df.index)
-        for col, weight in zip(mom_cols, weights):
-            col_score = self._score_percentile(mom_df[col], higher_better=True)
-            weighted_sum += col_score * weight
-        
-        return weighted_sum
-    
-    def _calculate_value_score(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate value factor score"""
-        scores = pd.Series(self.config.default_score, index=df.index)
-        
-        # PE ratio scoring (lower is better)
-        if 'pe' in df.columns:
-            pe = df['pe'].copy()
-            # Handle negative PE
-            pe_score = pd.Series(50.0, index=df.index)
-            
-            # Best: PE between 10-20
-            mask_best = pe.between(10, 20)
-            pe_score[mask_best] = 100
-            
-            # Good: PE between 5-10 or 20-30
-            mask_good = pe.between(5, 10) | pe.between(20, 30)
-            pe_score[mask_good] = 80
-            
-            # Fair: PE between 30-50
-            mask_fair = pe.between(30, 50)
-            pe_score[mask_fair] = 60
-            
-            # Poor: PE > 50 or < 5
-            mask_poor = (pe > 50) | (pe < 5)
-            pe_score[mask_poor] = 30
-            
-            # Negative PE
-            pe_score[pe < 0] = 20
-            
-            scores = pe_score * 0.5
-        
-        # EPS scoring
-        if 'eps_current' in df.columns and 'eps_change_pct' in df.columns:
-            # EPS growth
-            eps_growth = df['eps_change_pct'].clip(-100, 200)
-            eps_score = self._score_percentile(eps_growth, higher_better=True)
-            
-            # Positive EPS bonus
-            positive_eps_bonus = (df['eps_current'] > 0).astype(float) * 10
-            
-            scores += (eps_score * 0.4 + positive_eps_bonus * 0.1)
-        
-        return scores.clip(self.config.min_score, self.config.max_score)
-    
-    def _calculate_technical_score(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate technical factor score"""
+        """
+        Calculate momentum score based on returns over multiple periods
+        Higher recent returns = higher score
+        """
         score = pd.Series(50.0, index=df.index)
         
-        # SMA alignment scoring
-        if all(col in df.columns for col in ['price', 'sma_20d', 'sma_50d', 'sma_200d']):
-            # Price above SMAs
-            above_20 = (df['price'] > df['sma_20d']).astype(float) * 25
-            above_50 = (df['price'] > df['sma_50d']).astype(float) * 25
-            above_200 = (df['price'] > df['sma_200d']).astype(float) * 30
+        # Define periods and their weights (recent periods weighted more)
+        periods = {
+            'ret_1d': 0.10,
+            'ret_7d': 0.20,
+            'ret_30d': 0.30,
+            'ret_3m': 0.40
+        }
+        
+        # Calculate weighted momentum
+        for period, weight in periods.items():
+            if period in df.columns:
+                # Normalize returns to 0-100 scale
+                returns = df[period].fillna(0)
+                
+                # Use thresholds from constants
+                thresholds = MOMENTUM_THRESHOLDS['BULLISH']
+                period_key = period.replace('ret_', '').upper()
+                
+                # Score based on return strength
+                period_score = pd.Series(50.0, index=df.index)
+                
+                if period_key in thresholds:
+                    threshold = thresholds[period_key]
+                    # Linear scaling with caps
+                    period_score = 50 + (returns / threshold) * 25
+                    period_score = period_score.clip(0, 100)
+                else:
+                    # Fallback: simple percentile ranking
+                    period_score = returns.rank(pct=True) * 100
+                
+                # Add weighted contribution
+                score += (period_score - 50) * weight
+        
+        return score.clip(0, 100)
+    
+    # ========================================================================
+    # VALUE SCORING
+    # ========================================================================
+    
+    def _calculate_value_score(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Calculate value score based on PE ratio and EPS growth
+        Lower PE + Higher EPS growth = higher score
+        """
+        score = pd.Series(50.0, index=df.index)
+        
+        # PE Ratio Score (40% weight)
+        if 'pe' in df.columns:
+            pe = df['pe'].fillna(df['pe'].median())
             
-            # SMA alignment (20 > 50 > 200)
-            sma_aligned = (
+            # Use thresholds from constants
+            pe_thresholds = VALUE_THRESHOLDS['PE_RATIO']
+            
+            # Invert PE for scoring (lower is better)
+            pe_score = pd.Series(50.0, index=df.index)
+            
+            # Score based on PE ranges
+            pe_score[pe < pe_thresholds['DEEP_VALUE']] = 100
+            pe_score[pe.between(pe_thresholds['DEEP_VALUE'], pe_thresholds['VALUE'])] = 85
+            pe_score[pe.between(pe_thresholds['VALUE'], pe_thresholds['FAIR'])] = 70
+            pe_score[pe.between(pe_thresholds['FAIR'], pe_thresholds['EXPENSIVE'])] = 50
+            pe_score[pe > pe_thresholds['EXPENSIVE']] = 30
+            pe_score[pe < 0] = 20  # Negative PE is bad
+            
+            score = pe_score * 0.4
+        
+        # EPS Growth Score (40% weight)
+        if 'eps_change_pct' in df.columns:
+            eps_growth = df['eps_change_pct'].fillna(0)
+            
+            # Use thresholds from constants
+            eps_thresholds = VALUE_THRESHOLDS['EPS_GROWTH']
+            
+            eps_score = pd.Series(50.0, index=df.index)
+            eps_score[eps_growth > eps_thresholds['HYPER']] = 100
+            eps_score[eps_growth.between(eps_thresholds['HIGH'], eps_thresholds['HYPER'])] = 85
+            eps_score[eps_growth.between(eps_thresholds['MODERATE'], eps_thresholds['HIGH'])] = 70
+            eps_score[eps_growth.between(eps_thresholds['LOW'], eps_thresholds['MODERATE'])] = 60
+            eps_score[eps_growth < eps_thresholds['NEGATIVE']] = 30
+            
+            score += eps_score * 0.4
+        
+        # Price to 52W Range Score (20% weight)
+        if 'from_low_pct' in df.columns and 'from_high_pct' in df.columns:
+            # Calculate position in 52W range
+            position = df['from_low_pct'] / (df['from_low_pct'] + abs(df['from_high_pct']))
+            position = position.fillna(0.5) * 100
+            
+            # Sweet spot is 30-70% of range
+            position_score = pd.Series(50.0, index=df.index)
+            position_score[position.between(30, 70)] = 70
+            position_score[position.between(20, 30) | position.between(70, 80)] = 60
+            position_score[position < 20] = 40  # Too close to low
+            position_score[position > 80] = 40  # Too close to high
+            
+            score += position_score * 0.2
+        
+        return score.clip(0, 100)
+    
+    # ========================================================================
+    # TECHNICAL SCORING
+    # ========================================================================
+    
+    def _calculate_technical_score(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Calculate technical score based on SMA positions and trends
+        """
+        score = pd.Series(50.0, index=df.index)
+        
+        # Check if we have required columns
+        sma_cols = ['sma_20d', 'sma_50d', 'sma_200d']
+        if 'price' in df.columns and all(col in df.columns for col in sma_cols):
+            
+            # Price vs SMAs (60% weight)
+            price_vs_sma20 = ((df['price'] - df['sma_20d']) / df['sma_20d'] * 100).fillna(0)
+            price_vs_sma50 = ((df['price'] - df['sma_50d']) / df['sma_50d'] * 100).fillna(0)
+            price_vs_sma200 = ((df['price'] - df['sma_200d']) / df['sma_200d'] * 100).fillna(0)
+            
+            # Score each SMA position
+            sma20_score = self._score_sma_position(price_vs_sma20, weight=20)
+            sma50_score = self._score_sma_position(price_vs_sma50, weight=20)
+            sma200_score = self._score_sma_position(price_vs_sma200, weight=20)
+            
+            score = sma20_score + sma50_score + sma200_score
+            
+            # SMA Alignment (40% weight)
+            # Perfect bullish: SMA20 > SMA50 > SMA200
+            bullish_alignment = (
                 (df['sma_20d'] > df['sma_50d']) & 
                 (df['sma_50d'] > df['sma_200d'])
             ).astype(float) * 20
             
-            score = above_20 + above_50 + above_200 + sma_aligned
+            # Partial alignment
+            partial_alignment = (
+                (df['sma_20d'] > df['sma_200d']) |
+                (df['sma_50d'] > df['sma_200d'])
+            ).astype(float) * 10
+            
+            # Add alignment bonus
+            alignment_score = bullish_alignment + partial_alignment
+            score += alignment_score
         
-        # Trading position bonus
+        # Trading position penalty
         if 'trading_under' in df.columns:
-            # Bonus for not trading under any average
-            not_under_any = df['trading_under'].isna() | (df['trading_under'] == '')
-            score += not_under_any.astype(float) * 10
+            # Penalty for trading under averages
+            trading_under_penalty = pd.Series(0.0, index=df.index)
+            trading_under_penalty[df['trading_under'].notna()] = -10
+            score += trading_under_penalty
         
-        return score.clip(self.config.min_score, self.config.max_score)
+        return score.clip(0, 100)
     
-    def _calculate_volume_score(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate volume factor score"""
-        vol_score = pd.Series(50.0, index=df.index)
+    def _score_sma_position(self, distance_pct: pd.Series, weight: float) -> pd.Series:
+        """Helper to score price distance from SMA"""
+        score = pd.Series(0.0, index=distance_pct.index)
         
-        # Relative volume
-        if 'rvol' in df.columns:
-            rvol = df['rvol'].clip(0, 10)
-            # High volume is good (but not extreme)
-            rvol_score = pd.Series(50.0, index=df.index)
-            rvol_score[rvol.between(1.5, 3)] = 100
-            rvol_score[rvol.between(1, 1.5) | rvol.between(3, 5)] = 80
-            rvol_score[rvol.between(0.5, 1) | rvol.between(5, 10)] = 60
-            rvol_score[rvol < 0.5] = 30
-            
-            vol_score = rvol_score * 0.5
+        # Best: slightly above SMA (2-5%)
+        score[distance_pct.between(2, 5)] = weight
         
-        # Volume ratios
-        if 'vol_ratio_1d_90d' in df.columns:
-            # Parse percentage strings if present
-            vol_ratio = df['vol_ratio_1d_90d'].apply(clean_percentage)
-            
-            # Positive volume expansion is good
-            ratio_score = self._score_percentile(vol_ratio, higher_better=True)
-            vol_score += ratio_score * 0.5
+        # Good: moderately above (5-10%) or just above (0-2%)
+        score[distance_pct.between(5, 10) | distance_pct.between(0, 2)] = weight * 0.8
         
-        return vol_score.clip(self.config.min_score, self.config.max_score)
-    
-    def _calculate_sector_score(self, df: pd.DataFrame, sector_df: Optional[pd.DataFrame]) -> pd.Series:
-        """Calculate sector strength score"""
-        if sector_df is None or sector_df.empty:
-            return pd.Series(self.config.default_score, index=df.index)
+        # Neutral: far above (>10%) or slightly below (-2 to 0%)
+        score[(distance_pct > 10) | distance_pct.between(-2, 0)] = weight * 0.5
         
-        if 'sector' not in df.columns:
-            return pd.Series(self.config.default_score, index=df.index)
-        
-        # Use sector average returns
-        score_col = 'sector_avg_3m'  # Default to 3-month average
-        
-        # Try different time horizons
-        for col in ['sector_avg_3m', 'sector_avg_6m', 'sector_avg_1y', 'sector_avg_30d']:
-            if col in sector_df.columns:
-                score_col = col
-                break
-        
-        if score_col not in sector_df.columns:
-            return pd.Series(self.config.default_score, index=df.index)
-        
-        # Create sector score mapping
-        sector_scores = sector_df.set_index('sector')[score_col]
-        
-        # Clean percentage values
-        if sector_scores.dtype == 'object':
-            sector_scores = sector_scores.apply(clean_percentage)
-        
-        # Map to stocks
-        stock_sector_values = df['sector'].map(sector_scores)
-        
-        # Convert to percentile scores
-        return self._score_percentile(stock_sector_values, higher_better=True)
-    
-    # ========================================================================
-    # ADVANCED FACTORS
-    # ========================================================================
-    
-    def _calculate_momentum_quality(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate momentum quality (consistency) score"""
-        mom_cols = ['ret_3d', 'ret_7d', 'ret_30d', 'ret_3m']
-        
-        if not all(col in df.columns for col in mom_cols):
-            return pd.Series(self.config.default_score, index=df.index)
-        
-        mom_df = df[mom_cols]
-        
-        # Check consistency (all positive or all negative)
-        all_positive = (mom_df > 0).all(axis=1).astype(float) * 30
-        all_negative = (mom_df < 0).all(axis=1).astype(float) * 10
-        
-        # Check if momentum is accelerating
-        mom_values = mom_df.values
-        accelerating = pd.Series(0.0, index=df.index)
-        
-        for i in range(len(mom_values)):
-            row = mom_values[i]
-            if not np.isnan(row).any():
-                # Check if each period is stronger than the previous
-                if all(row[j] >= row[j-1] for j in range(1, len(row))):
-                    accelerating.iloc[i] = 40
-                elif all(row[j] <= row[j-1] for j in range(1, len(row))):
-                    accelerating.iloc[i] = 20
-        
-        # Low volatility in returns is good
-        volatility = mom_df.std(axis=1)
-        vol_score = self._score_percentile(volatility, higher_better=False) * 0.3
-        
-        return (all_positive + all_negative + accelerating + vol_score).clip(
-            self.config.min_score, 
-            self.config.max_score
-        )
-    
-    def _calculate_earnings_growth(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate earnings growth score"""
-        if 'eps_change_pct' not in df.columns:
-            return pd.Series(self.config.default_score, index=df.index)
-        
-        # Clean and clip EPS change
-        eps_change = df['eps_change_pct'].apply(clean_percentage).clip(-100, 500)
-        
-        # Score based on growth tiers
-        score = pd.Series(50.0, index=df.index)
-        score[eps_change > 50] = 100
-        score[eps_change.between(25, 50)] = 85
-        score[eps_change.between(10, 25)] = 70
-        score[eps_change.between(0, 10)] = 60
-        score[eps_change.between(-10, 0)] = 40
-        score[eps_change < -10] = 20
+        # Bad: below SMA
+        score[distance_pct < -2] = weight * 0.2
         
         return score
     
-    def _calculate_risk_adjusted_return(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate risk-adjusted return (Sharpe-like) score"""
-        ret_cols = ['ret_3d', 'ret_7d', 'ret_30d']
-        
-        if not all(col in df.columns for col in ret_cols):
-            return pd.Series(self.config.default_score, index=df.index)
-        
-        returns = df[ret_cols]
-        
-        # Calculate mean return and volatility
-        mean_return = returns.mean(axis=1)
-        volatility = returns.std(axis=1)
-        
-        # Sharpe-like ratio (avoid division by zero)
-        sharpe = mean_return / (volatility + 1e-6)
-        
-        # Convert to score
-        return self._score_percentile(sharpe, higher_better=True)
-    
     # ========================================================================
-    # MAIN CALCULATION METHODS
+    # VOLUME SCORING
     # ========================================================================
     
-    def calculate_factor_scores(
+    def _calculate_volume_score(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Calculate volume score based on relative volume and trends
+        """
+        score = pd.Series(50.0, index=df.index)
+        
+        # Relative Volume (50% weight)
+        if 'rvol' in df.columns:
+            rvol = df['rvol'].fillna(1.0)
+            
+            # Use thresholds from constants
+            rvol_thresholds = VOLUME_THRESHOLDS['RVOL_THRESHOLDS']
+            
+            rvol_score = pd.Series(50.0, index=df.index)
+            
+            # High volume is generally good (shows interest)
+            rvol_score[rvol > rvol_thresholds['EXTREME']] = 90
+            rvol_score[rvol.between(rvol_thresholds['HIGH'], rvol_thresholds['EXTREME'])] = 80
+            rvol_score[rvol.between(rvol_thresholds['NORMAL'], rvol_thresholds['HIGH'])] = 70
+            rvol_score[rvol.between(rvol_thresholds['LOW'], rvol_thresholds['NORMAL'])] = 50
+            rvol_score[rvol < rvol_thresholds['LOW']] = 30
+            
+            score = rvol_score * 0.5
+        
+        # Volume Trend (50% weight)
+        vol_cols = ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d']
+        vol_weights = [0.5, 0.3, 0.2]
+        
+        vol_trend_score = pd.Series(0.0, index=df.index)
+        for col, weight in zip(vol_cols, vol_weights):
+            if col in df.columns:
+                # Parse percentage if needed
+                ratio = df[col]
+                if ratio.dtype == 'object':
+                    ratio = ratio.str.replace('%', '').astype(float)
+                
+                # Score volume expansion
+                col_score = pd.Series(50.0, index=df.index)
+                col_score[ratio > 50] = 80  # >50% increase
+                col_score[ratio.between(0, 50)] = 60  # Positive
+                col_score[ratio.between(-20, 0)] = 50  # Slight decrease
+                col_score[ratio < -20] = 30  # Major decrease
+                
+                vol_trend_score += col_score * weight * 0.5
+        
+        score += vol_trend_score
+        
+        return score.clip(0, 100)
+    
+    # ========================================================================
+    # SECTOR SCORING
+    # ========================================================================
+    
+    def _calculate_sector_score(
         self, 
         df: pd.DataFrame, 
-        sector_df: Optional[pd.DataFrame] = None
-    ) -> Tuple[pd.DataFrame, Dict[str, pd.Series]]:
+        sector_df: Optional[pd.DataFrame]
+    ) -> pd.Series:
         """
-        Calculate all factor scores
-        
-        Returns:
-            Tuple of (dataframe with scores, dict of individual factor scores)
+        Calculate sector strength score
         """
-        if df.empty:
-            logger.warning("Empty dataframe provided to calculate_factor_scores")
-            return df, {}
+        if sector_df is None or 'sector' not in df.columns:
+            return pd.Series(50.0, index=df.index)
         
-        df = df.copy()
-        factor_scores = {}
+        # Find best available sector metric
+        sector_metrics = ['sector_avg_3m', 'sector_avg_6m', 'sector_avg_1y', 'sector_avg_30d']
+        metric_col = None
         
-        # Calculate each factor
-        with self._lock:
-            # Core factors
-            factor_scores['momentum'] = self._calculate_momentum_score(df)
-            factor_scores['value'] = self._calculate_value_score(df)
-            factor_scores['technical'] = self._calculate_technical_score(df)
-            factor_scores['volume'] = self._calculate_volume_score(df)
-            factor_scores['sector_strength'] = self._calculate_sector_score(df, sector_df)
-            
-            # Advanced factors (if enabled)
-            if self.config.enable_advanced_factors:
-                factor_scores['momentum_quality'] = self._calculate_momentum_quality(df)
-                factor_scores['earnings_growth'] = self._calculate_earnings_growth(df)
-                factor_scores['risk_adjusted_return'] = self._calculate_risk_adjusted_return(df)
-            
-            # Add factor scores to dataframe
-            for name, scores in factor_scores.items():
-                df[f'{name}_score'] = scores.round(2)
-            
-            # Log calculation
-            self._log_event({
-                'action': 'factor_calculation',
-                'timestamp': datetime.now(),
-                'factors_calculated': list(factor_scores.keys()),
-                'rows': len(df)
-            })
+        for col in sector_metrics:
+            if col in sector_df.columns:
+                metric_col = col
+                break
         
-        return df, factor_scores
+        if metric_col is None:
+            return pd.Series(50.0, index=df.index)
+        
+        # Create sector performance mapping
+        sector_perf = sector_df.set_index('sector')[metric_col]
+        
+        # Clean percentage values if needed
+        if sector_perf.dtype == 'object':
+            sector_perf = sector_perf.str.replace('%', '').astype(float)
+        
+        # Map to stocks
+        stock_sector_perf = df['sector'].map(sector_perf).fillna(0)
+        
+        # Convert to score (percentile ranking)
+        ranks = stock_sector_perf.rank(pct=True)
+        sector_score = ranks * 100
+        
+        return sector_score.fillna(50).clip(0, 100)
     
-    def calculate_composite_score(
-        self,
-        df: pd.DataFrame,
-        factor_scores: Dict[str, pd.Series],
-        regime: RegimeType = RegimeType.BALANCED
-    ) -> pd.DataFrame:
+    # ========================================================================
+    # COMPOSITE SCORING
+    # ========================================================================
+    
+    def _calculate_composite_score(self, df: pd.DataFrame) -> pd.Series:
         """
-        Calculate final composite score based on regime weights
-        
-        Args:
-            df: DataFrame with stocks
-            factor_scores: Dictionary of factor scores
-            regime: Market regime for weighting
-            
-        Returns:
-            DataFrame with composite scores added
+        Calculate weighted composite score from all factors
         """
-        df = df.copy()
+        # Get weights from constants
+        weights = SCORE_WEIGHTS.copy()
         
-        # Get regime weights
-        weights = self.regime_weights.get(regime, self.regime_weights[RegimeType.BALANCED])
+        # Normalize weights to sum to 1
+        total_weight = sum(weights.values())
+        for key in weights:
+            weights[key] /= total_weight
         
-        # Calculate weighted composite
+        # Calculate weighted sum
         composite = pd.Series(0.0, index=df.index)
-        applied_weights = {}
         
-        for factor_name, weight in weights.items():
-            if factor_name in factor_scores:
-                score = factor_scores[factor_name].fillna(self.config.default_score)
-                composite += score * weight
-                applied_weights[factor_name] = weight
-            else:
-                logger.debug(f"Factor '{factor_name}' not found in scores")
+        factor_mapping = {
+            'MOMENTUM': 'momentum_score',
+            'VALUE': 'value_score',
+            'TECHNICAL': 'technical_score',
+            'VOLUME': 'volume_score',
+            'SECTOR': 'sector_score'
+        }
         
-        # Normalize if weights don't sum to 1
-        weight_sum = sum(applied_weights.values())
-        if weight_sum > 0 and abs(weight_sum - 1.0) > 0.01:
-            composite = composite / weight_sum
+        for factor, col in factor_mapping.items():
+            if col in df.columns and factor in weights:
+                composite += df[col].fillna(50) * weights[factor]
         
-        # Add to dataframe
-        df['composite_score'] = composite.round(2)
-        df['signal_strength'] = pd.cut(
-            df['composite_score'],
-            bins=[0, 30, 50, 70, 85, 100],
-            labels=['Very Weak', 'Weak', 'Neutral', 'Strong', 'Very Strong']
+        return composite.round(2)
+    
+    def _categorize_signals(self, scores: pd.Series) -> pd.Series:
+        """
+        Categorize stocks into BUY/WATCH/AVOID based on composite score
+        """
+        conditions = [
+            scores >= SIGNAL_THRESHOLDS['BUY'],
+            scores >= SIGNAL_THRESHOLDS['WATCH'],
+            scores >= SIGNAL_THRESHOLDS['AVOID']
+        ]
+        
+        choices = ['BUY', 'WATCH', 'NEUTRAL']
+        
+        return pd.Series(
+            np.select(conditions, choices, default='AVOID'),
+            index=scores.index
         )
-        
-        # Add percentile rank
-        df['score_rank'] = df['composite_score'].rank(method='min', ascending=False)
-        df['score_percentile'] = df['composite_score'].rank(pct=True) * 100
-        
-        # Store metadata
-        df['scoring_regime'] = regime.value
-        df['factors_used'] = ', '.join(applied_weights.keys())
-        
-        # Generate explanations if enabled
-        if self.config.track_explanations:
-            df['score_explanation'] = df.apply(
-                lambda row: self._generate_explanation(row, factor_scores, applied_weights),
-                axis=1
-            )
-        
-        # Log scoring
-        self._log_event({
-            'action': 'composite_scoring',
-            'timestamp': datetime.now(),
-            'regime': regime.value,
-            'avg_score': df['composite_score'].mean(),
-            'score_distribution': df['signal_strength'].value_counts().to_dict()
-        })
-        
-        return df
-    
-    def _generate_explanation(
-        self, 
-        row: pd.Series, 
-        factor_scores: Dict[str, pd.Series],
-        weights: Dict[str, float]
-    ) -> str:
-        """Generate human-readable explanation for score"""
-        explanations = []
-        
-        # Get top contributing factors
-        contributions = []
-        for factor, weight in weights.items():
-            if factor in factor_scores and row.name in factor_scores[factor].index:
-                score = factor_scores[factor].loc[row.name]
-                contribution = score * weight
-                contributions.append((factor, score, contribution))
-        
-        # Sort by contribution
-        contributions.sort(key=lambda x: x[2], reverse=True)
-        
-        # Build explanation
-        for factor, score, contrib in contributions[:3]:  # Top 3 factors
-            if score >= 80:
-                explanations.append(f"Strong {factor.replace('_', ' ').title()}")
-            elif score >= 60:
-                explanations.append(f"Good {factor.replace('_', ' ').title()}")
-            elif score <= 30:
-                explanations.append(f"Weak {factor.replace('_', ' ').title()}")
-        
-        return " | ".join(explanations) if explanations else "Moderate across all factors"
-    
-    def _log_event(self, event: Dict[str, Any]):
-        """Log event to audit trail"""
-        with self._lock:
-            self.audit_log.append(event)
-    
-    def get_factor_summary(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Get summary statistics for all factors"""
-        factor_cols = [col for col in df.columns if col.endswith('_score')]
-        
-        if not factor_cols:
-            return pd.DataFrame()
-        
-        summary = df[factor_cols].describe().round(2)
-        summary.loc['non_null_count'] = df[factor_cols].notna().sum()
-        
-        return summary.T
 
 # ============================================================================
 # CONVENIENCE FUNCTIONS
@@ -816,85 +417,106 @@ class SignalEngine:
 
 def calculate_signals(
     stocks_df: pd.DataFrame,
-    sector_df: Optional[pd.DataFrame] = None,
-    regime: Union[str, RegimeType] = RegimeType.BALANCED,
-    config: Optional[SignalConfig] = None
+    sector_df: Optional[pd.DataFrame] = None
 ) -> pd.DataFrame:
     """
-    Main entry point for signal calculation
+    Calculate all signals for stocks
     
     Args:
-        stocks_df: DataFrame with stock data
-        sector_df: DataFrame with sector data (optional)
-        regime: Market regime or regime name
-        config: Signal configuration (optional)
+        stocks_df: Stock data
+        sector_df: Sector data (optional)
         
     Returns:
-        DataFrame with all scores calculated
+        DataFrame with signals and scores
     """
-    if stocks_df.empty:
-        logger.warning("Empty dataframe provided to calculate_signals")
-        return stocks_df
-    
-    # Convert regime string to enum if needed
-    if isinstance(regime, str):
-        try:
-            regime = RegimeType(regime.lower())
-        except ValueError:
-            logger.warning(f"Unknown regime '{regime}', using BALANCED")
-            regime = RegimeType.BALANCED
-    
-    # Initialize engine
-    engine = SignalEngine(config)
-    
-    # Calculate factor scores
-    scored_df, factor_scores = engine.calculate_factor_scores(stocks_df, sector_df)
-    
-    # Calculate composite score
-    final_df = engine.calculate_composite_score(scored_df, factor_scores, regime)
-    
-    # Add signal classification based on thresholds
-    conditions = [
-        final_df['composite_score'] >= SIGNAL_THRESHOLDS.get('BUY', 85),
-        final_df['composite_score'] >= SIGNAL_THRESHOLDS.get('WATCH', 70),
-        final_df['composite_score'] >= SIGNAL_THRESHOLDS.get('AVOID', 50)
-    ]
-    choices = ['BUY', 'WATCH', 'NEUTRAL']
-    final_df['signal_category'] = np.select(conditions, choices, default='AVOID')
-    
-    logger.info(f"Signal calculation complete for {len(final_df)} stocks")
-    logger.info(f"Average composite score: {final_df['composite_score'].mean():.2f}")
-    
-    return final_df
+    engine = SignalEngine()
+    return engine.calculate_all_signals(stocks_df, sector_df)
 
-def get_top_signals(
-    df: pd.DataFrame, 
-    n: int = 20, 
-    signal_type: Optional[str] = None
+def get_top_opportunities(
+    scored_df: pd.DataFrame,
+    n: int = 20,
+    min_score: float = 70.0
 ) -> pd.DataFrame:
-    """Get top N stocks by composite score"""
-    if 'composite_score' not in df.columns:
-        logger.error("No composite_score column found")
+    """
+    Get top opportunities based on composite score
+    
+    Args:
+        scored_df: DataFrame with scores
+        n: Number of top stocks to return
+        min_score: Minimum score threshold
+        
+    Returns:
+        Top opportunities sorted by score
+    """
+    if 'composite_score' not in scored_df.columns:
+        logger.error("No composite_score found in dataframe")
         return pd.DataFrame()
     
-    sorted_df = df.sort_values('composite_score', ascending=False)
+    # Filter by minimum score
+    filtered = scored_df[scored_df['composite_score'] >= min_score]
     
-    if signal_type and 'signal_category' in df.columns:
-        sorted_df = sorted_df[sorted_df['signal_category'] == signal_type]
+    # Sort and return top N
+    return filtered.nlargest(n, 'composite_score')
+
+def get_signals_by_category(
+    scored_df: pd.DataFrame,
+    category: str = 'BUY'
+) -> pd.DataFrame:
+    """
+    Get all stocks with a specific signal category
     
-    return sorted_df.head(n)
+    Args:
+        scored_df: DataFrame with signals
+        category: Signal category (BUY/WATCH/NEUTRAL/AVOID)
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if 'signal' not in scored_df.columns:
+        logger.error("No signal column found in dataframe")
+        return pd.DataFrame()
+    
+    return scored_df[scored_df['signal'] == category].sort_values(
+        'composite_score', 
+        ascending=False
+    )
+
+def get_factor_analysis(scored_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Get summary statistics for all factor scores
+    
+    Args:
+        scored_df: DataFrame with factor scores
+        
+    Returns:
+        Summary statistics
+    """
+    factor_cols = [
+        'momentum_score', 'value_score', 'technical_score',
+        'volume_score', 'sector_score', 'composite_score'
+    ]
+    
+    available_cols = [col for col in factor_cols if col in scored_df.columns]
+    
+    if not available_cols:
+        return pd.DataFrame()
+    
+    return scored_df[available_cols].describe().round(2)
 
 # ============================================================================
-# TESTING
+# MAIN
 # ============================================================================
 
 if __name__ == "__main__":
     print("="*60)
-    print("M.A.N.T.R.A. Signal Engine - Ready")
+    print("M.A.N.T.R.A. Signal Engine")
     print("="*60)
-    print("\nThis module calculates multi-factor scores for stocks.")
-    print("Import and use calculate_signals() function with your data.")
-    print("\nExample usage:")
-    print("  from signal_engine import calculate_signals")
-    print("  scored_df = calculate_signals(stocks_df, sector_df)")
+    print("\nMulti-factor scoring system for Indian stocks")
+    print("\nFactors:")
+    print("- Momentum: Price trends across timeframes")
+    print("- Value: PE ratio and EPS growth")
+    print("- Technical: SMA positions and alignment")
+    print("- Volume: Relative volume and trends")
+    print("- Sector: Relative sector performance")
+    print("\nUse calculate_signals() to score your stocks")
     print("="*60)
