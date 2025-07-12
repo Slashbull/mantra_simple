@@ -1,214 +1,552 @@
 """
-M.A.N.T.R.A. Edge Finder v2.2 (Final, Production-Ready)
-======================================================
-Elite multi-edge signal detection, vectorized for speed. 
-Exports: compute_edge_signals, find_edges, edge_overview
-
-- Fast, safe, robust
-- All-time best design for your edge tab
+edge_finder.py - M.A.N.T.R.A. Edge Finder
+=========================================
+Identifies special trading setups and high-probability opportunities
+Combines multiple factors to find stocks with statistical edge
 """
 
-from __future__ import annotations
-
-import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Dict, List, Tuple, Optional, Any
+import numpy as np
+import logging
+from typing import Dict, List, Tuple, Optional, Set
+from dataclasses import dataclass
+from datetime import datetime
 
-# ─────────────────────────────────────────────────────────────
-# Enums & Config
-# ─────────────────────────────────────────────────────────────
-class EdgeType(str, Enum):
-    MOMENTUM_BREAKOUT = "Momentum Breakout"
-    VALUE_ANOMALY = "Value Anomaly"
-    VOLUME_SURGE = "Volume Surge"
-    SECTOR_LEADER = "Sector Leader"
-    VOLATILITY_SQUEEZE = "Volatility Squeeze"
-    TREND_REVERSAL = "Trend Reversal"
-    NEW_HIGH = "New 52W High"
-    NEW_LOW = "New 52W Low"
-    ACCUMULATION = "Accumulation Pattern"
-    DISTRIBUTION = "Distribution Warning"
-    MEAN_REVERSION = "Mean Reversion Setup"
-    RELATIVE_STRENGTH = "Relative Strength"
-    BREAKOUT_PULLBACK = "Breakout Pullback"
-    OVERSOLD_BOUNCE = "Oversold Bounce"
-    OVERBOUGHT_REVERSAL = "Overbought Reversal"
+# Import from constants
+from constants import (
+    MOMENTUM_LEVELS, VALUE_THRESHOLDS, VOLUME_LEVELS,
+    SECTOR_GROUPS, MARKET_CAP_RANGES
+)
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# EDGE SETUP DEFINITIONS
+# ============================================================================
 
 @dataclass
-class EdgeConfig:
-    min_vol_ratio: float = 1.5
-    high_vol_ratio: float = 3
-    rsi_oversold: int = 30
-    rsi_overbought: int = 70
-    score_clip: Tuple[float, float] = (0, 1)
-    pe_floor: float = 15
-    score_weight: Dict[str, float] = field(default_factory=lambda: {
-        "momentum": .3, "value": .3, "volume": .4
-    })
+class EdgeSetup:
+    """Definition of a trading edge setup"""
+    name: str
+    description: str
+    conditions: Dict[str, any]
+    expected_return: float
+    holding_period: str
+    success_rate: float
+    risk_level: str
 
-    def __post_init__(self):
-        s = sum(self.score_weight.values())
-        for k in self.score_weight:
-            self.score_weight[k] /= s
-
-@dataclass
-class MarketRegime:
-    vol_pct: float
-    trend_strength: float
-    breadth: float
-    trending: bool
-    volatile: bool
-
-def _detect_regime(df: pd.DataFrame) -> MarketRegime:
-    ret7 = df.get("ret_7d", pd.Series(dtype=float))
-    ret30 = df.get("ret_30d", pd.Series(dtype=float))
-    vol_pct = (ret7.std() / ret30.std()) if not ret30.std() == 0 else 1
-    trend = (ret30.abs() > 10).mean()
-    breadth = (ret7 > 0).mean()
-    return MarketRegime(vol_pct, trend, breadth, trend > 0.3, vol_pct > 1.2)
-
-# ─────────────────────────────────────────────────────────────
-# Core edge detection (vectorized, fast)
-# ─────────────────────────────────────────────────────────────
-
-def compute_edge_signals(df: pd.DataFrame, cfg: EdgeConfig = None) -> pd.DataFrame:
-    """Compute all edge flags and explanations, vectorized for performance."""
-    cfg = cfg or EdgeConfig()
-    d = df.copy()
-    reg = _detect_regime(d)
-
-    # Momentum breakout
-    mom_short = d.get("ret_3d", 0)
-    mom_med = d.get("ret_7d", 0)
-    thr_mom = mom_med.abs().quantile(.9)
-    volratio = d.get("vol_ratio_1d_90d", 1)
-    price = d.get("price", 0)
-    hi = d.get("high_52w", 1)
-    edge_mom = (
-        (mom_short > 0.5 * thr_mom) &
-        (mom_med > thr_mom) &
-        ((price >= .95 * hi) | (price > d.get("ma_50", 0))) &
-        (volratio > cfg.min_vol_ratio)
+# Predefined edge setups
+EDGE_SETUPS = {
+    "momentum_breakout": EdgeSetup(
+        name="Momentum Breakout",
+        description="Strong momentum with volume on technical breakout",
+        conditions={
+            "min_momentum_score": 80,
+            "min_volume_spike": 2.0,
+            "sma_breakout": True,
+            "near_52w_high": True
+        },
+        expected_return=15.0,
+        holding_period="2-4 weeks",
+        success_rate=65.0,
+        risk_level="Medium"
+    ),
+    
+    "value_reversal": EdgeSetup(
+        name="Value Reversal",
+        description="Oversold value stock showing reversal signs",
+        conditions={
+            "max_pe": 20,
+            "min_position_52w": 0,
+            "max_position_52w": 30,
+            "positive_reversal": True
+        },
+        expected_return=20.0,
+        holding_period="1-3 months",
+        success_rate=60.0,
+        risk_level="Medium-High"
+    ),
+    
+    "earnings_surprise": EdgeSetup(
+        name="Earnings Surprise Play",
+        description="Strong earnings beat with positive price reaction",
+        conditions={
+            "min_eps_change": 25,
+            "positive_price_reaction": True,
+            "volume_expansion": True
+        },
+        expected_return=12.0,
+        holding_period="1-2 weeks",
+        success_rate=70.0,
+        risk_level="Low-Medium"
+    ),
+    
+    "sector_leader": EdgeSetup(
+        name="Sector Leadership",
+        description="Leading stock in hot sector",
+        conditions={
+            "top_sector_performer": True,
+            "sector_outperformance": 5.0,
+            "relative_strength": 80
+        },
+        expected_return=18.0,
+        holding_period="1-2 months",
+        success_rate=62.0,
+        risk_level="Medium"
+    ),
+    
+    "institutional_accumulation": EdgeSetup(
+        name="Institutional Accumulation",
+        description="Large cap with steady accumulation pattern",
+        conditions={
+            "min_market_cap": 10000,  # 10,000 Cr
+            "volume_trend_positive": True,
+            "price_stability": True,
+            "higher_lows": True
+        },
+        expected_return=25.0,
+        holding_period="3-6 months",
+        success_rate=58.0,
+        risk_level="Low"
+    ),
+    
+    "small_cap_rocket": EdgeSetup(
+        name="Small Cap Rocket",
+        description="Small cap with explosive momentum",
+        conditions={
+            "max_market_cap": 2000,  # 2,000 Cr
+            "min_ret_30d": 20,
+            "min_volume_increase": 100,
+            "technical_strength": True
+        },
+        expected_return=30.0,
+        holding_period="2-4 weeks",
+        success_rate=45.0,
+        risk_level="High"
+    ),
+    
+    "turnaround_play": EdgeSetup(
+        name="Turnaround Story",
+        description="Beaten down stock showing recovery signs",
+        conditions={
+            "min_decline_from_high": 50,
+            "positive_eps_trend": True,
+            "volume_returning": True,
+            "breaking_downtrend": True
+        },
+        expected_return=40.0,
+        holding_period="3-12 months",
+        success_rate=40.0,
+        risk_level="High"
+    ),
+    
+    "defensive_value": EdgeSetup(
+        name="Defensive Value",
+        description="Stable dividend stock at attractive valuation",
+        conditions={
+            "defensive_sector": True,
+            "max_pe": 18,
+            "min_market_cap": 5000,
+            "low_volatility": True
+        },
+        expected_return=12.0,
+        holding_period="6-12 months",
+        success_rate=75.0,
+        risk_level="Low"
     )
-    score_mom = (
-        (mom_short / thr_mom).clip(*cfg.score_clip) * cfg.score_weight["momentum"] +
-        (mom_med / thr_mom).clip(*cfg.score_clip) * cfg.score_weight["momentum"] +
-        ((price / hi).clip(.9, 1) - .9) / .1 * cfg.score_weight["value"] +
-        (volratio / cfg.high_vol_ratio).clip(*cfg.score_clip) * cfg.score_weight["volume"]
-    )
-    exp_mom = np.where(edge_mom, np.char.add("Breaking out ", mom_med.round(1).astype(str)) + "%", "")
+}
 
-    # Value anomaly
-    pe = d.get("pe", 99)
-    eps_s = d.get("eps_score", 0)
-    final = d.get("final_score", 0)
-    pe_low = pe[pe > 0].quantile(.2) if (pe > 0).any() else cfg.pe_floor
-    edge_val = (pe > 0) & (pe < pe_low) & (eps_s > 80) & (final > 70) & (d.get("ret_30d", 0) > -20)
-    score_val = ((1 - pe / pe_low).clip(*cfg.score_clip) * .4 +
-                 (eps_s / 100) * .3 +
-                 (final / 100) * .3)
-    exp_val = np.where(edge_val, "Value PE=" + pe.round(1).astype(str), "")
+# ============================================================================
+# EDGE FINDER ENGINE
+# ============================================================================
 
-    # Volume surge
-    ret1 = d.get("ret_1d", 0)
-    edge_vol = (volratio > cfg.high_vol_ratio) & (ret1.abs() > 2)
-    score_vol = (volratio / cfg.high_vol_ratio).clip(*cfg.score_clip) * .6 + (ret1.abs() / 5).clip(*cfg.score_clip) * .4
-    exp_vol = np.where(edge_vol, "Vol " + volratio.round(1).astype(str) + "x", "")
-
-    # Assemble
-    d["edge_momentum_breakout"] = edge_mom
-    d["score_momentum_breakout"] = np.where(edge_mom, score_mom, 0)
-    d["exp_momentum_breakout"] = exp_mom
-    d["edge_value_anomaly"] = edge_val
-    d["score_value_anomaly"] = np.where(edge_val, score_val, 0)
-    d["exp_value_anomaly"] = exp_val
-    d["edge_volume_surge"] = edge_vol
-    d["score_volume_surge"] = np.where(edge_vol, score_vol, 0)
-    d["exp_volume_surge"] = exp_vol
-
-    # Edge glue
-    edge_cols = [c for c in d.columns if c.startswith("edge_")]
-    score_cols = [c for c in d.columns if c.startswith("score_")]
-    d["edge_count"] = d[edge_cols].sum(axis=1)
-    d["edge_score"] = d[score_cols].mean(axis=1)
-    et_map = {f"edge_{e.name.lower()}": e.value for e in EdgeType}
-    d["edge_types"] = pd.Series(
-        [', '.join([et_map[c] for c in edge_cols if d.loc[i, c]]) for i in d.index], index=d.index
-    )
-    exp_cols = [c for c in d.columns if c.startswith("exp_")]
-    d["edge_explanation"] = pd.Series(
-        [' | '.join([str(d.loc[i, c]) for c in exp_cols if d.loc[i, c]]) for i in d.index], index=d.index
-    )
-    d["has_edge"] = d["edge_count"] > 0
-    d["market_regime"] = _describe_regime(reg)
-    return d
-
-def find_edges(df: pd.DataFrame, min_edges: int = 1, min_score: float = 0.0) -> pd.DataFrame:
-    """Filter for rows with at least min_edges and min_score."""
-    d = compute_edge_signals(df)
-    return d[(d.edge_count >= min_edges) & (d.edge_score >= min_score)].sort_values("edge_score", ascending=False)
-
-def _describe_regime(r: MarketRegime) -> str:
-    if r.volatile and r.trending: return "Volatile Trending"
-    if r.volatile: return "High Volatility"
-    if r.trending: return "Trending"
-    return "Range-Bound"
-
-# ─────────────────────────────────────────────────────────────
-# 🚩 Edge Overview Function
-# ─────────────────────────────────────────────────────────────
-
-def edge_overview(df: pd.DataFrame) -> dict:
+class EdgeFinder:
     """
-    Summarize edge signal distribution in the DataFrame.
-    Returns a dictionary with counts and stats for the dashboard.
+    Finds stocks matching predefined edge setups
     """
-    if df is None or df.empty:
-        return {
-            'total_edges': 0,
-            'unique_stocks': 0,
-            'unique_edge_types': 0,
-            'top_edge_types': {},
-            'avg_edges_per_stock': 0.0,
-        }
-
-    # Total number of edges (sum of edge_count)
-    total_edges = int(df['edge_count'].sum()) if 'edge_count' in df.columns else 0
-
-    # Unique stocks with at least one edge
-    unique_stocks = int((df['edge_count'] > 0).sum()) if 'edge_count' in df.columns else 0
-
-    # Extract all edge types
-    if 'edge_types' in df.columns and not df['edge_types'].isna().all():
-        all_types = (
-            df.loc[df['edge_types'].notna(), 'edge_types']
-            .astype(str)
-            .str.split(', ')
-            .explode()
+    
+    def __init__(self, setups: Optional[Dict[str, EdgeSetup]] = None):
+        self.setups = setups or EDGE_SETUPS
+        self.edges_found = []
+        
+    def find_all_edges(self, df: pd.DataFrame, sector_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        """
+        Find all edge setups in the data
+        
+        Args:
+            df: DataFrame with analyzed stock data
+            sector_df: Sector performance data
+            
+        Returns:
+            DataFrame with edge setup identification
+        """
+        if df.empty:
+            logger.warning("Empty dataframe provided to edge finder")
+            return df
+            
+        df = df.copy()
+        logger.info(f"Searching for edge setups in {len(df)} stocks...")
+        
+        # Prepare additional metrics needed
+        self._prepare_edge_metrics(df, sector_df)
+        
+        # Check each setup
+        for setup_name, setup in self.setups.items():
+            logger.debug(f"Checking {setup_name} setup...")
+            df[f'edge_{setup_name}'] = df.apply(
+                lambda row: self._check_setup(row, setup),
+                axis=1
+            )
+        
+        # Aggregate edge information
+        edge_columns = [col for col in df.columns if col.startswith('edge_')]
+        df['edge_count'] = df[edge_columns].sum(axis=1)
+        df['edge_setups'] = df.apply(
+            lambda row: self._get_edge_names(row, edge_columns),
+            axis=1
         )
-        top_edge_types = all_types.value_counts().head(5).to_dict()
-        unique_edge_types = all_types.nunique()
-    else:
-        top_edge_types = {}
-        unique_edge_types = 0
+        
+        # Calculate edge score
+        df['edge_score'] = df.apply(self._calculate_edge_score, axis=1)
+        
+        # Add best edge details
+        df['best_edge'] = df.apply(self._get_best_edge, axis=1)
+        df['edge_expected_return'] = df.apply(self._get_expected_return, axis=1)
+        df['edge_holding_period'] = df.apply(self._get_holding_period, axis=1)
+        df['edge_risk_level'] = df.apply(self._get_risk_level, axis=1)
+        
+        # Log summary
+        total_edges = (df['edge_count'] > 0).sum()
+        logger.info(f"Found {total_edges} stocks with edge setups")
+        
+        return df
+    
+    # ========================================================================
+    # METRIC PREPARATION
+    # ========================================================================
+    
+    def _prepare_edge_metrics(self, df: pd.DataFrame, sector_df: Optional[pd.DataFrame]):
+        """Prepare additional metrics needed for edge detection"""
+        
+        # Market cap in Crores
+        if 'market_cap' in df.columns:
+            df['market_cap_cr'] = df['market_cap'] / 1e7  # Convert to Crores
+        
+        # Volume trend
+        if all(col in df.columns for col in ['volume_1d', 'volume_30d']):
+            df['volume_trend_positive'] = df['volume_1d'] > df['volume_30d'] * 1.2
+        
+        # Price stability (low daily volatility)
+        if 'ret_1d' in df.columns:
+            df['price_stability'] = df['ret_1d'].abs() < 2
+        
+        # Higher lows pattern (simplified)
+        if all(col in df.columns for col in ['low_52w', 'price']):
+            df['higher_lows'] = df['price'] > df['low_52w'] * 1.1
+        
+        # Technical strength
+        if 'technical_score' in df.columns:
+            df['technical_strength'] = df['technical_score'] > 70
+        
+        # Positive EPS trend
+        if 'eps_change_pct' in df.columns:
+            df['positive_eps_trend'] = df['eps_change_pct'] > 0
+        
+        # Volume returning (for turnarounds)
+        if 'rvol' in df.columns:
+            df['volume_returning'] = df['rvol'] > 0.8
+        
+        # Breaking downtrend (simplified)
+        if all(col in df.columns for col in ['ret_7d', 'ret_30d']):
+            df['breaking_downtrend'] = (df['ret_30d'] < 0) & (df['ret_7d'] > 3)
+        
+        # Defensive sectors
+        if 'sector' in df.columns:
+            defensive_sectors = SECTOR_GROUPS.get('Defensive', [])
+            df['defensive_sector'] = df['sector'].isin(defensive_sectors)
+        
+        # Low volatility (using return std as proxy)
+        return_cols = ['ret_1d', 'ret_7d', 'ret_30d']
+        if all(col in df.columns for col in return_cols):
+            df['volatility'] = df[return_cols].std(axis=1)
+            df['low_volatility'] = df['volatility'] < 5
+        
+        # Sector outperformance
+        if sector_df is not None and 'sector' in df.columns:
+            sector_perf = sector_df.set_index('sector')['sector_ret_30d'].to_dict()
+            df['sector_performance'] = df['sector'].map(sector_perf).fillna(0)
+            market_avg = df['ret_30d'].mean() if 'ret_30d' in df.columns else 0
+            df['sector_outperformance'] = df['sector_performance'] - market_avg
+        
+        # Top sector performer
+        if 'sector' in df.columns and 'ret_30d' in df.columns:
+            df['sector_rank'] = df.groupby('sector')['ret_30d'].rank(ascending=False)
+            df['top_sector_performer'] = df['sector_rank'] <= 3
+        
+        # Relative strength
+        if 'percentile' in df.columns:
+            df['relative_strength'] = df['percentile']
+        elif 'composite_score' in df.columns:
+            df['relative_strength'] = df['composite_score']
+        
+        # Decline from high
+        if 'from_high_pct' in df.columns:
+            df['min_decline_from_high'] = abs(df['from_high_pct'])
+        
+        # Volume increase
+        if all(col in df.columns for col in ['volume_1d', 'volume_30d']):
+            df['min_volume_increase'] = (
+                (df['volume_1d'] - df['volume_30d']) / df['volume_30d'] * 100
+            ).fillna(0)
+        
+        # Positive reversal
+        if all(col in df.columns for col in ['position_52w', 'ret_7d']):
+            df['positive_reversal'] = (df['position_52w'] < 30) & (df['ret_7d'] > 3)
+        
+        # SMA breakout
+        if 'distance_from_sma_200d' in df.columns:
+            df['sma_breakout'] = df['distance_from_sma_200d'] > 2
+        
+        # Near 52w high
+        if 'position_52w' in df.columns:
+            df['near_52w_high'] = df['position_52w'] > 85
+        
+        # Positive price reaction
+        if 'ret_1d' in df.columns:
+            df['positive_price_reaction'] = df['ret_1d'] > 1
+        
+        # Volume expansion
+        if 'rvol' in df.columns:
+            df['volume_expansion'] = df['rvol'] > 1.5
+    
+    # ========================================================================
+    # SETUP CHECKING
+    # ========================================================================
+    
+    def _check_setup(self, row: pd.Series, setup: EdgeSetup) -> bool:
+        """Check if a stock matches a specific edge setup"""
+        for condition, value in setup.conditions.items():
+            if condition.startswith('min_'):
+                # Minimum value check
+                col = condition.replace('min_', '')
+                if col not in row or pd.isna(row[col]) or row[col] < value:
+                    return False
+                    
+            elif condition.startswith('max_'):
+                # Maximum value check
+                col = condition.replace('max_', '')
+                if col not in row or pd.isna(row[col]) or row[col] > value:
+                    return False
+                    
+            else:
+                # Boolean or equality check
+                if condition not in row or row[condition] != value:
+                    return False
+        
+        return True
+    
+    def _get_edge_names(self, row: pd.Series, edge_columns: List[str]) -> str:
+        """Get names of all edge setups matched"""
+        edges = []
+        for col in edge_columns:
+            if row[col]:
+                edge_name = col.replace('edge_', '').replace('_', ' ').title()
+                edges.append(edge_name)
+        
+        return " | ".join(edges) if edges else "None"
+    
+    # ========================================================================
+    # SCORING AND DETAILS
+    # ========================================================================
+    
+    def _calculate_edge_score(self, row: pd.Series) -> float:
+        """Calculate overall edge score based on setups matched"""
+        score = 0
+        edge_columns = [col for col in row.index if col.startswith('edge_')]
+        
+        for col in edge_columns:
+            if row[col]:
+                setup_name = col.replace('edge_', '')
+                if setup_name in self.setups:
+                    setup = self.setups[setup_name]
+                    # Weight by success rate and expected return
+                    score += (setup.success_rate * setup.expected_return) / 100
+        
+        return round(score, 1)
+    
+    def _get_best_edge(self, row: pd.Series) -> str:
+        """Get the best edge setup for a stock"""
+        best_edge = None
+        best_score = 0
+        
+        edge_columns = [col for col in row.index if col.startswith('edge_')]
+        
+        for col in edge_columns:
+            if row[col]:
+                setup_name = col.replace('edge_', '')
+                if setup_name in self.setups:
+                    setup = self.setups[setup_name]
+                    score = setup.success_rate * setup.expected_return
+                    if score > best_score:
+                        best_score = score
+                        best_edge = setup.name
+        
+        return best_edge or "None"
+    
+    def _get_expected_return(self, row: pd.Series) -> float:
+        """Get expected return for best edge setup"""
+        best_edge = row.get('best_edge', 'None')
+        
+        for setup in self.setups.values():
+            if setup.name == best_edge:
+                return setup.expected_return
+        
+        return 0.0
+    
+    def _get_holding_period(self, row: pd.Series) -> str:
+        """Get recommended holding period for best edge setup"""
+        best_edge = row.get('best_edge', 'None')
+        
+        for setup in self.setups.values():
+            if setup.name == best_edge:
+                return setup.holding_period
+        
+        return "N/A"
+    
+    def _get_risk_level(self, row: pd.Series) -> str:
+        """Get risk level for best edge setup"""
+        best_edge = row.get('best_edge', 'None')
+        
+        for setup in self.setups.values():
+            if setup.name == best_edge:
+                return setup.risk_level
+        
+        return "Unknown"
 
-    # Average edges per stock
-    avg_edges_per_stock = float(df['edge_count'].mean()) if 'edge_count' in df.columns and len(df) > 0 else 0.0
+# ============================================================================
+# CONVENIENCE FUNCTIONS
+# ============================================================================
 
-    return {
-        'total_edges': total_edges,
-        'unique_stocks': unique_stocks,
-        'unique_edge_types': unique_edge_types,
-        'top_edge_types': top_edge_types,
-        'avg_edges_per_stock': round(avg_edges_per_stock, 2),
+def find_edges(
+    df: pd.DataFrame,
+    sector_df: Optional[pd.DataFrame] = None,
+    custom_setups: Optional[Dict[str, EdgeSetup]] = None
+) -> pd.DataFrame:
+    """
+    Find all edge setups in stock data
+    
+    Args:
+        df: DataFrame with analyzed stock data
+        sector_df: Sector performance data
+        custom_setups: Custom edge setups (optional)
+        
+    Returns:
+        DataFrame with edge setup identification
+    """
+    finder = EdgeFinder(custom_setups)
+    return finder.find_all_edges(df, sector_df)
+
+def get_stocks_with_edge(
+    df: pd.DataFrame,
+    min_edge_score: float = 10.0,
+    setup_names: Optional[List[str]] = None
+) -> pd.DataFrame:
+    """
+    Get stocks with specific edge setups
+    
+    Args:
+        df: DataFrame with edge analysis
+        min_edge_score: Minimum edge score
+        setup_names: Specific setups to filter
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if 'edge_score' not in df.columns:
+        logger.error("No edge_score column found")
+        return pd.DataFrame()
+    
+    # Filter by score
+    filtered = df[df['edge_score'] >= min_edge_score]
+    
+    # Filter by specific setups if provided
+    if setup_names:
+        mask = filtered['edge_setups'].str.contains('|'.join(setup_names), case=False)
+        filtered = filtered[mask]
+    
+    return filtered.sort_values('edge_score', ascending=False)
+
+def get_edge_statistics(df: pd.DataFrame) -> Dict:
+    """
+    Get statistics about edge setups found
+    
+    Args:
+        df: DataFrame with edge analysis
+        
+    Returns:
+        Dictionary with statistics
+    """
+    if 'edge_count' not in df.columns:
+        return {'error': 'No edge analysis found'}
+    
+    # Count each setup type
+    setup_counts = {}
+    for setup_name in EDGE_SETUPS.keys():
+        col = f'edge_{setup_name}'
+        if col in df.columns:
+            setup_counts[setup_name] = df[col].sum()
+    
+    stats = {
+        'total_stocks': len(df),
+        'stocks_with_edges': (df['edge_count'] > 0).sum(),
+        'avg_edge_score': df[df['edge_count'] > 0]['edge_score'].mean(),
+        'setup_counts': setup_counts,
+        'risk_distribution': df[df['edge_count'] > 0]['edge_risk_level'].value_counts().to_dict(),
+        'top_edges': df.nlargest(10, 'edge_score')[
+            ['ticker', 'edge_score', 'best_edge', 'edge_expected_return']
+        ].to_dict('records')
     }
+    
+    return stats
 
-# ─────────────────────────────────────────────────────────────
-# Self-test (safe to remove in production)
-# ─────────────────────────────────────────────────────────────
+def get_edge_by_risk(
+    df: pd.DataFrame,
+    risk_levels: List[str] = ['Low', 'Low-Medium']
+) -> pd.DataFrame:
+    """
+    Get edge setups filtered by risk level
+    
+    Args:
+        df: DataFrame with edge analysis
+        risk_levels: Acceptable risk levels
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if 'edge_risk_level' not in df.columns:
+        logger.error("No edge_risk_level column found")
+        return pd.DataFrame()
+    
+    return df[
+        (df['edge_count'] > 0) & 
+        (df['edge_risk_level'].isin(risk_levels))
+    ].sort_values('edge_score', ascending=False)
+
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
-    # Quick test stub
-    print("EdgeFinder v2.2 loaded – use compute_edge_signals(df), edge_overview(df)")
+    print("="*60)
+    print("M.A.N.T.R.A. Edge Finder")
+    print("="*60)
+    print("\nIdentifies high-probability trading setups")
+    print("\nEdge Setups:")
+    for setup_name, setup in EDGE_SETUPS.items():
+        print(f"\n{setup.name}:")
+        print(f"  - {setup.description}")
+        print(f"  - Expected Return: {setup.expected_return}%")
+        print(f"  - Success Rate: {setup.success_rate}%")
+        print(f"  - Risk Level: {setup.risk_level}")
+    print("\nUse find_edges() to identify opportunities")
+    print("="*60)
