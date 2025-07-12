@@ -13,6 +13,11 @@
 ├── signal_engine.py           # All scoring logic (momentum, value, EPS, sector, volume)
 ├── streamlit_dashboard.py     # Main Streamlit app/dashboard UI (entry point)
 ├── watchlist_builder.py       # Watchlist & opportunity builders (top-N, sector leaders, etc.)
+opportunity_finder.py
+quick_scanner.py 
+best_buy_finder.py
+quick_start.py
+report.py
 │
 ├── requirements.txt           # [Optional] Python requirements (pandas, streamlit, numpy, etc.)
 ├── README.md                  # [Optional] Project description, usage, FAQ, credits
