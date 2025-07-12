@@ -1,309 +1,564 @@
 """
-sector_rotation_engine.py - Elite Sector Rotation Analysis Engine for M.A.N.T.R.A.
-
-v2.1 — tuned weights, safer math, and a bug-fix in edge detection
-──────────────────────────────────────────────────────────────────
-* **Bug-fix:** `_detect_rotation_edges` mistakenly appended the outer list to itself. Now correctly appends `sector_edges`.
-* **Modular weights:** tweak `WEIGHTS` at the top to rebalance score contribution without touching code.
-* **Utility helpers** (`_pct`, `_safe_rank`) keep percentile logic DRY and robust to NaNs / singleton frames.
-* **Explainable pipeline:** every step writes an inline comment about *why* it’s needed.
-* **Self-test:** `python sector_rotation_engine.py --demo` prints a 3-sector demo so you can sanity-check in <2 s.
-
-Author: Claude (AI Quant Architect)
-License: Proprietary – M.A.N.T.R.A. System
+sector_rotation_engine.py - M.A.N.T.R.A. Sector Rotation Engine
+==============================================================
+Analyzes sector performance, identifies rotation patterns,
+and finds sector-based opportunities
 """
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
 import pandas as pd
+import numpy as np
+import logging
+from typing import Dict, List, Tuple, Optional
+from datetime import datetime
+import warnings
 
-# ────────────────────────────────────────────────────────────────────────────────
-# CONFIG – tweak here, not in the guts
-# ────────────────────────────────────────────────────────────────────────────────
+# Import from constants
+from constants import SECTOR_GROUPS, MARKET_REGIMES
 
-WEIGHTS: Dict[str, float] = {
-    "sector": 0.40,
-    "consistency": 0.20,
-    "relative": 0.20,
-    "diversity": 0.20,  # lower concentration risk → higher score
-}
+logger = logging.getLogger(__name__)
+warnings.filterwarnings('ignore')
 
-# percentile bins for status assignment
-STATUS_THRESHOLDS = {
-    "Explosive": 0.90,
-    "Hot": 0.75,
-    "Warming": 0.50,
-    "Neutral": 0.25,
-    "Cooling": 0.10,
-    "Cold": 0.00,
-}
+# ============================================================================
+# SECTOR ANALYSIS ENGINE
+# ============================================================================
 
-# ────────────────────────────────────────────────────────────────────────────────
-# ENUMS & DATA CLASSES
-# ────────────────────────────────────────────────────────────────────────────────
-
-
-class RotationStatus(Enum):
-    EXPLOSIVE = "Explosive"
-    HOT = "Hot"
-    WARMING = "Warming"
-    NEUTRAL = "Neutral"
-    COOLING = "Cooling"
-    COLD = "Cold"
-
-
-@dataclass
-class SectorAnalytics:
-    momentum_velocity: float
-    consistency_score: float
-    relative_strength: float
-    concentration_risk: float
-    edge_score: float
-
-
-# ────────────────────────────────────────────────────────────────────────────────
-# PUBLIC API
-# ────────────────────────────────────────────────────────────────────────────────
-
-
-def compute_sector_rotation(
-    sector_df: pd.DataFrame,
-    metric: str = "sector_avg_3m",
-    enable_advanced: bool = True,
-) -> pd.DataFrame:
-    """End-to-end sector-rotation dataframe.
-
-    Parameters
-    ----------
-    sector_df : pd.DataFrame
-        Must contain at least a *sector* column plus the chosen *metric* column.
-    metric : str, default "sector_avg_3m"
-        Which numeric column to rank for the core momentum score.
-    enable_advanced : bool, default True
-        Adds velocity, consistency, relative strength & edge detection.
+class SectorRotationEngine:
     """
-
-    df = _normalize(sector_df)
-
-    if metric not in df.columns:
-        metric = _fallback_metric(df)
-
-    df = _core_scores(df, metric)
-    df = _assign_status(df)
-
-    if enable_advanced and not df.empty:
-        df = _advanced_metrics(df, metric)
-        df = _detect_edges(df)
-
-    return _format(df, enable_advanced)
-
-
-def sector_rotation_summary(df: pd.DataFrame) -> Dict[str, Any]:
-    """Dashboard-friendly snapshot of the rotation landscape."""
-    out: Dict[str, Any] = {
-        "generated": pd.Timestamp.now().isoformat(timespec="seconds"),
-        "total_sectors": len(df),
-        "state": "balanced",
-    }
-
-    if "rotation_status" in df.columns:
-        dist = df["rotation_status"].value_counts(dropna=False).to_dict()
-        out["rotation_distribution"] = dist
-
-        hot = dist.get("Hot", 0) / max(len(df), 1)
-        cold = dist.get("Cold", 0) / max(len(df), 1)
-        if hot > 0.4:
-            out["state"] = "risk-on"
-        elif cold > 0.4:
-            out["state"] = "risk-off"
-
-    # Top / bottom snapshot
-    if {"sector", "sector_score"}.issubset(df.columns):
-        out["leaders"] = df.nlargest(3, "sector_score")[
-            ["sector", "sector_score", "rotation_status"]
-        ].to_dict("records")
-        out["laggards"] = df.nsmallest(3, "sector_score")[
-            ["sector", "sector_score", "rotation_status"]
-        ].to_dict("records")
-
-    if "edge_score" in df.columns:
-        out["edge_overview"] = {
-            "avg_edge": round(df["edge_score"].mean(), 2),
-            "potential": int((df["edge_score"] > 70).sum()),
+    Analyzes sector rotation patterns and identifies opportunities
+    """
+    
+    def __init__(self):
+        self.sector_scores = {}
+        self.rotation_signals = {}
+        self.market_regime = None
+        
+    def analyze_sectors(
+        self, 
+        stocks_df: pd.DataFrame, 
+        sector_df: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+        """
+        Comprehensive sector analysis
+        
+        Args:
+            stocks_df: Stock data with sector information
+            sector_df: Sector performance data
+            
+        Returns:
+            Tuple of (enhanced_stocks_df, enhanced_sector_df, analysis_dict)
+        """
+        if stocks_df.empty or sector_df.empty:
+            logger.warning("Empty dataframes provided")
+            return stocks_df, sector_df, {}
+            
+        logger.info("Starting sector rotation analysis...")
+        
+        # Enhance sector data
+        sector_df = self._enhance_sector_data(sector_df)
+        
+        # Calculate sector momentum
+        sector_df = self._calculate_sector_momentum(sector_df)
+        
+        # Identify rotation patterns
+        sector_df = self._identify_rotation_patterns(sector_df)
+        
+        # Rank sectors
+        sector_df = self._rank_sectors(sector_df)
+        
+        # Detect market regime
+        self.market_regime = self._detect_market_regime(stocks_df, sector_df)
+        
+        # Add sector analysis to stocks
+        stocks_df = self._add_sector_analysis_to_stocks(stocks_df, sector_df)
+        
+        # Generate rotation signals
+        rotation_signals = self._generate_rotation_signals(sector_df)
+        
+        # Create analysis summary
+        analysis = self._create_analysis_summary(sector_df, rotation_signals)
+        
+        logger.info(f"Sector analysis complete. Market regime: {self.market_regime}")
+        
+        return stocks_df, sector_df, analysis
+    
+    # ========================================================================
+    # SECTOR DATA ENHANCEMENT
+    # ========================================================================
+    
+    def _enhance_sector_data(self, sector_df: pd.DataFrame) -> pd.DataFrame:
+        """Add calculated metrics to sector data"""
+        df = sector_df.copy()
+        
+        # Clean percentage columns
+        for col in df.columns:
+            if 'ret_' in col or 'avg_' in col:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].str.replace('%', '').astype(float)
+        
+        # Calculate average returns across timeframes
+        timeframes = {
+            'short_term': ['sector_ret_1d', 'sector_ret_3d', 'sector_ret_7d'],
+            'medium_term': ['sector_ret_30d', 'sector_ret_3m'],
+            'long_term': ['sector_ret_6m', 'sector_ret_1y']
+        }
+        
+        for term, cols in timeframes.items():
+            available_cols = [col for col in cols if col in df.columns]
+            if available_cols:
+                df[f'{term}_avg'] = df[available_cols].mean(axis=1)
+        
+        # Calculate volatility (using available returns)
+        return_cols = [col for col in df.columns if 'sector_ret_' in col]
+        if return_cols:
+            df['volatility'] = df[return_cols].std(axis=1)
+        
+        # Risk-adjusted returns (simplified Sharpe-like)
+        if 'medium_term_avg' in df.columns and 'volatility' in df.columns:
+            df['risk_adjusted_return'] = df['medium_term_avg'] / (df['volatility'] + 1)
+        
+        return df
+    
+    # ========================================================================
+    # MOMENTUM CALCULATION
+    # ========================================================================
+    
+    def _calculate_sector_momentum(self, sector_df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate sector momentum scores"""
+        df = sector_df.copy()
+        
+        # Momentum components with weights
+        momentum_components = {
+            'sector_ret_1d': 0.05,
+            'sector_ret_7d': 0.15,
+            'sector_ret_30d': 0.30,
+            'sector_ret_3m': 0.35,
+            'sector_ret_6m': 0.15
+        }
+        
+        # Calculate weighted momentum
+        df['momentum_score'] = 0
+        total_weight = 0
+        
+        for col, weight in momentum_components.items():
+            if col in df.columns:
+                df['momentum_score'] += df[col] * weight
+                total_weight += weight
+        
+        # Normalize
+        if total_weight > 0:
+            df['momentum_score'] /= total_weight
+        
+        # Momentum acceleration (is momentum increasing?)
+        if all(col in df.columns for col in ['sector_ret_7d', 'sector_ret_30d']):
+            df['momentum_acceleration'] = (
+                df['sector_ret_7d'] / 7 > df['sector_ret_30d'] / 30
+            )
+        
+        # Momentum consistency (all positive or all negative)
+        momentum_cols = ['sector_ret_7d', 'sector_ret_30d', 'sector_ret_3m']
+        available_mom_cols = [col for col in momentum_cols if col in df.columns]
+        if available_mom_cols:
+            df['momentum_consistency'] = (
+                (df[available_mom_cols] > 0).all(axis=1) |
+                (df[available_mom_cols] < 0).all(axis=1)
+            )
+        
+        return df
+    
+    # ========================================================================
+    # ROTATION PATTERN IDENTIFICATION
+    # ========================================================================
+    
+    def _identify_rotation_patterns(self, sector_df: pd.DataFrame) -> pd.DataFrame:
+        """Identify sector rotation patterns"""
+        df = sector_df.copy()
+        
+        # Pattern flags
+        df['emerging_strength'] = False
+        df['losing_momentum'] = False
+        df['rotation_in'] = False
+        df['rotation_out'] = False
+        df['consolidating'] = False
+        
+        # Emerging strength: Poor long-term but strong recent
+        if all(col in df.columns for col in ['sector_ret_6m', 'sector_ret_30d', 'sector_ret_7d']):
+            df['emerging_strength'] = (
+                (df['sector_ret_6m'] < 0) &
+                (df['sector_ret_30d'] > 5) &
+                (df['sector_ret_7d'] > 2)
+            )
+        
+        # Losing momentum: Strong long-term but weak recent
+        if all(col in df.columns for col in ['sector_ret_6m', 'sector_ret_30d', 'sector_ret_7d']):
+            df['losing_momentum'] = (
+                (df['sector_ret_6m'] > 20) &
+                (df['sector_ret_30d'] < 0) &
+                (df['sector_ret_7d'] < -2)
+            )
+        
+        # Rotation in: Improving relative performance
+        if 'momentum_score' in df.columns:
+            sector_median = df['momentum_score'].median()
+            df['rotation_in'] = (
+                (df['momentum_score'] > sector_median) &
+                df.get('momentum_acceleration', False)
+            )
+        
+        # Rotation out: Deteriorating relative performance
+        if 'momentum_score' in df.columns:
+            df['rotation_out'] = (
+                (df['momentum_score'] < sector_median) &
+                ~df.get('momentum_acceleration', True)
+            )
+        
+        # Consolidating: Low volatility, flat returns
+        if all(col in df.columns for col in ['volatility', 'sector_ret_30d']):
+            df['consolidating'] = (
+                (df['volatility'] < df['volatility'].quantile(0.25)) &
+                (df['sector_ret_30d'].abs() < 5)
+            )
+        
+        # Overall rotation signal
+        df['rotation_signal'] = 'NEUTRAL'
+        df.loc[df['rotation_in'] | df['emerging_strength'], 'rotation_signal'] = 'BUY'
+        df.loc[df['rotation_out'] | df['losing_momentum'], 'rotation_signal'] = 'SELL'
+        df.loc[df['consolidating'], 'rotation_signal'] = 'HOLD'
+        
+        return df
+    
+    # ========================================================================
+    # SECTOR RANKING
+    # ========================================================================
+    
+    def _rank_sectors(self, sector_df: pd.DataFrame) -> pd.DataFrame:
+        """Rank sectors by multiple criteria"""
+        df = sector_df.copy()
+        
+        # Ranking criteria
+        ranking_metrics = {
+            'momentum_rank': ('momentum_score', True),
+            'return_rank': ('sector_ret_30d', True),
+            'risk_adj_rank': ('risk_adjusted_return', True),
+            'volume_rank': ('sector_count', True),  # More stocks = more opportunities
+            'volatility_rank': ('volatility', False)  # Lower is better
+        }
+        
+        # Calculate ranks
+        for rank_col, (metric_col, ascending) in ranking_metrics.items():
+            if metric_col in df.columns:
+                df[rank_col] = df[metric_col].rank(ascending=ascending, method='min')
+        
+        # Composite rank (average of all ranks)
+        rank_cols = [col for col in df.columns if col.endswith('_rank')]
+        if rank_cols:
+            df['composite_rank'] = df[rank_cols].mean(axis=1)
+            df['final_rank'] = df['composite_rank'].rank(method='min')
+        
+        # Categorize sectors
+        if 'final_rank' in df.columns:
+            total_sectors = len(df)
+            df['sector_category'] = pd.cut(
+                df['final_rank'],
+                bins=[0, total_sectors*0.2, total_sectors*0.4, 
+                      total_sectors*0.6, total_sectors*0.8, total_sectors+1],
+                labels=['Leaders', 'Strong', 'Neutral', 'Weak', 'Laggards']
+            )
+        
+        return df
+    
+    # ========================================================================
+    # MARKET REGIME DETECTION
+    # ========================================================================
+    
+    def _detect_market_regime(
+        self, 
+        stocks_df: pd.DataFrame, 
+        sector_df: pd.DataFrame
+    ) -> str:
+        """Detect overall market regime based on sector behavior"""
+        
+        # Calculate market breadth
+        if 'ret_30d' in stocks_df.columns:
+            advancing_pct = (stocks_df['ret_30d'] > 0).sum() / len(stocks_df) * 100
+            avg_return = stocks_df['ret_30d'].mean()
+        else:
+            advancing_pct = 50
+            avg_return = 0
+        
+        # Calculate sector dispersion
+        if 'sector_ret_30d' in sector_df.columns:
+            sector_dispersion = sector_df['sector_ret_30d'].std()
+        else:
+            sector_dispersion = 0
+        
+        # Determine regime
+        if advancing_pct > 70 and avg_return > 5:
+            regime = "Bull Market"
+        elif advancing_pct < 30 and avg_return < -5:
+            regime = "Bear Market"
+        elif sector_dispersion > 10:
+            regime = "Rotation Market"
+        elif 45 <= advancing_pct <= 55 and abs(avg_return) < 2:
+            regime = "Sideways Market"
+        else:
+            regime = "Transitional"
+        
+        return regime
+    
+    # ========================================================================
+    # STOCK-LEVEL SECTOR ANALYSIS
+    # ========================================================================
+    
+    def _add_sector_analysis_to_stocks(
+        self, 
+        stocks_df: pd.DataFrame, 
+        sector_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Add sector analysis metrics to individual stocks"""
+        df = stocks_df.copy()
+        
+        # Create sector lookup dictionaries
+        sector_metrics = {}
+        for col in ['momentum_score', 'rotation_signal', 'final_rank', 
+                    'sector_category', 'risk_adjusted_return']:
+            if col in sector_df.columns:
+                sector_metrics[col] = sector_df.set_index('sector')[col].to_dict()
+        
+        # Map sector metrics to stocks
+        if 'sector' in df.columns:
+            for metric, mapping in sector_metrics.items():
+                df[f'sector_{metric}'] = df['sector'].map(mapping)
+        
+        # Calculate relative performance within sector
+        if 'sector' in df.columns and 'ret_30d' in df.columns:
+            df['sector_relative_performance'] = df.groupby('sector')['ret_30d'].transform(
+                lambda x: (x - x.mean()) / (x.std() + 1e-6)
+            )
+            
+            # Flag sector leaders/laggards
+            df['is_sector_leader'] = df.groupby('sector')['ret_30d'].transform(
+                lambda x: x >= x.quantile(0.8)
+            )
+            df['is_sector_laggard'] = df.groupby('sector')['ret_30d'].transform(
+                lambda x: x <= x.quantile(0.2)
+            )
+        
+        return df
+    
+    # ========================================================================
+    # ROTATION SIGNALS
+    # ========================================================================
+    
+    def _generate_rotation_signals(self, sector_df: pd.DataFrame) -> Dict:
+        """Generate actionable rotation signals"""
+        signals = {
+            'rotate_into': [],
+            'rotate_out_of': [],
+            'accumulate': [],
+            'avoid': []
+        }
+        
+        for _, sector in sector_df.iterrows():
+            sector_name = sector['sector']
+            signal = sector.get('rotation_signal', 'NEUTRAL')
+            
+            signal_info = {
+                'sector': sector_name,
+                'momentum_score': round(sector.get('momentum_score', 0), 2),
+                'return_30d': round(sector.get('sector_ret_30d', 0), 2),
+                'rank': int(sector.get('final_rank', 0)),
+                'category': sector.get('sector_category', 'Unknown')
+            }
+            
+            if signal == 'BUY' and sector.get('emerging_strength', False):
+                signals['rotate_into'].append(signal_info)
+            elif signal == 'BUY':
+                signals['accumulate'].append(signal_info)
+            elif signal == 'SELL':
+                signals['rotate_out_of'].append(signal_info)
+            elif sector.get('sector_category') == 'Laggards':
+                signals['avoid'].append(signal_info)
+        
+        # Sort by momentum score
+        for key in signals:
+            signals[key] = sorted(
+                signals[key], 
+                key=lambda x: x['momentum_score'], 
+                reverse=True
+            )[:5]  # Top 5 only
+        
+        return signals
+    
+    # ========================================================================
+    # ANALYSIS SUMMARY
+    # ========================================================================
+    
+    def _create_analysis_summary(
+        self, 
+        sector_df: pd.DataFrame, 
+        rotation_signals: Dict
+    ) -> Dict:
+        """Create comprehensive sector analysis summary"""
+        
+        # Top performing sectors
+        top_sectors = sector_df.nsmallest(5, 'final_rank')[
+            ['sector', 'sector_ret_30d', 'momentum_score', 'sector_category']
+        ].to_dict('records')
+        
+        # Bottom performing sectors
+        bottom_sectors = sector_df.nlargest(5, 'final_rank')[
+            ['sector', 'sector_ret_30d', 'momentum_score', 'sector_category']
+        ].to_dict('records')
+        
+        # Sector statistics
+        stats = {
+            'total_sectors': len(sector_df),
+            'average_return_30d': round(sector_df['sector_ret_30d'].mean(), 2),
+            'best_performer': sector_df.nlargest(1, 'sector_ret_30d').iloc[0]['sector'],
+            'worst_performer': sector_df.nsmallest(1, 'sector_ret_30d').iloc[0]['sector'],
+            'highest_momentum': sector_df.nlargest(1, 'momentum_score').iloc[0]['sector'],
+            'most_stocks': sector_df.nlargest(1, 'sector_count').iloc[0]['sector']
+        }
+        
+        # Pattern summary
+        patterns = {
+            'emerging_strength': sector_df['emerging_strength'].sum(),
+            'losing_momentum': sector_df['losing_momentum'].sum(),
+            'consolidating': sector_df['consolidating'].sum()
+        }
+        
+        return {
+            'market_regime': self.market_regime,
+            'rotation_signals': rotation_signals,
+            'top_sectors': top_sectors,
+            'bottom_sectors': bottom_sectors,
+            'statistics': stats,
+            'patterns': patterns,
+            'timestamp': datetime.now().isoformat()
         }
 
-    return out
+# ============================================================================
+# CONVENIENCE FUNCTIONS
+# ============================================================================
 
+def analyze_sector_rotation(
+    stocks_df: pd.DataFrame,
+    sector_df: pd.DataFrame
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+    """
+    Main function for sector rotation analysis
+    
+    Args:
+        stocks_df: Stock data
+        sector_df: Sector data
+        
+    Returns:
+        Tuple of (enhanced_stocks_df, enhanced_sector_df, analysis)
+    """
+    engine = SectorRotationEngine()
+    return engine.analyze_sectors(stocks_df, sector_df)
 
-# ────────────────────────────────────────────────────────────────────────────────
-# INTERNAL – helpers are prefixed with _
-# ────────────────────────────────────────────────────────────────────────────────
-
-
-def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
-    if raw.empty:
-        raise ValueError("Empty sector dataframe provided")
-
-    df = raw.copy()
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip()
-        .str.lower()
-        .str.replace(r"[^a-z0-9_]+", "_", regex=True)
-    )
-
-    sector_col = next((c for c in df.columns if "sector" in c), None)
-    if not sector_col:
-        raise ValueError("No sector column found")
-    if sector_col != "sector":
-        df = df.rename(columns={sector_col: "sector"})
-
-    df["sector"] = df["sector"].astype(str).str.title()
-    df = df.dropna(subset=["sector"]).reset_index(drop=True)
-
-    numeric_cols = [c for c in df.columns if c != "sector"]
-    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
-
-    return df
-
-
-def _fallback_metric(df: pd.DataFrame) -> str:
-    # choose the first reasonable numeric column
-    numeric = df.select_dtypes("number").columns.tolist()
-    if not numeric:
-        raise ValueError("No numeric columns to rank by")
-    return numeric[0]
-
-
-def _core_scores(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    # replace NaNs with median to avoid skewing ranks
-    clean = df[metric].fillna(df[metric].median())
-    df["sector_score"] = _pct(clean)
-    df["sector_rank"] = df["sector_score"].rank(ascending=False, method="min").astype(int)
-    return df
-
-
-def _assign_status(df: pd.DataFrame) -> pd.DataFrame:
-    def which_status(p: float) -> str:  # percentile 0-100
-        for name, thr in STATUS_THRESHOLDS.items():
-            if p >= thr * 100:
-                return name
-        return "Cold"
-
-    df["rotation_status"] = df["sector_score"].apply(which_status)
-    return df
-
-
-def _advanced_metrics(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    # momentum velocity: 1M minus third of 3M (if both exist)
-    m1 = next((c for c in df.columns if "1m" in c and "avg" in c), None)
-    m3 = next((c for c in df.columns if "3m" in c and "avg" in c), None)
-    df["momentum_velocity"] = df[m1] - df[m3] / 3 if m1 and m3 else 0
-
-    # consistency: low volatility preferred
-    vol = next((c for c in df.columns if "vol" in c or "std" in c), None)
-    df["consistency_score"] = 100 - _pct(df[vol]) if vol else 50
-
-    # relative strength to market
-    market_avg = df[metric].mean()
-    df["relative_strength"] = ((df[metric] - market_avg) / abs(market_avg).clip(lower=1e-9)) * 100
-
-    # concentration risk (needs sector_count)
-    if "sector_count" in df.columns:
-        total = df["sector_count"].sum() or 1
-        df["concentration_risk"] = df["sector_count"] / total * 100
-    else:
-        df["concentration_risk"] = 100 / len(df)
-
-    # composite edge score
-    df["edge_score"] = (
-        df["sector_score"] * WEIGHTS["sector"]
-        + df["consistency_score"] * WEIGHTS["consistency"]
-        + (df["relative_strength"] + 100) / 2 * WEIGHTS["relative"]
-        + (100 - df["concentration_risk"]) * WEIGHTS["diversity"]
-    ).clip(0, 100)
-
-    return df
-
-
-def _detect_edges(df: pd.DataFrame) -> pd.DataFrame:
-    # threshold shortcuts to avoid recomputing quantiles every loop
-    vel_hi = df["momentum_velocity"].quantile(0.9)
-    edges: List[List[str]] = []
-
-    for _, row in df.iterrows():
-        sector_edges: List[str] = []
-        if row.get("momentum_velocity", 0) > vel_hi:
-            sector_edges.append("momentum_surge")
-        if row["sector_score"] < 30 and row.get("consistency_score", 50) > 70:
-            sector_edges.append("oversold_quality")
-        if row["rotation_status"] == "Explosive" and row.get("relative_strength", 0) > 10:
-            sector_edges.append("rotation_leader")
-        if row.get("sector_score", 0) < 20 and row.get("momentum_velocity", 0) > 0:
-            sector_edges.append("potential_reversal")
-        edges.append(sector_edges)
-
-    df["rotation_edges"] = edges
-    df["edge_count"] = df["rotation_edges"].apply(len)
-    return df
-
-
-def _format(df: pd.DataFrame, adv: bool) -> pd.DataFrame:
-    base = ["sector", "sector_score", "sector_rank", "rotation_status"]
-    adv_cols = [
-        "momentum_velocity",
-        "consistency_score",
-        "relative_strength",
-        "edge_score",
-        "edge_count",
+def get_sector_leaders(
+    stocks_df: pd.DataFrame,
+    top_n_sectors: int = 3
+) -> pd.DataFrame:
+    """
+    Get stocks from leading sectors
+    
+    Args:
+        stocks_df: DataFrame with sector analysis
+        top_n_sectors: Number of top sectors to include
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if 'sector_category' not in stocks_df.columns:
+        logger.error("No sector analysis found")
+        return pd.DataFrame()
+    
+    # Get stocks from leader sectors
+    leaders = stocks_df[
+        (stocks_df['sector_category'] == 'Leaders') |
+        (stocks_df['sector_category'] == 'Strong')
     ]
-    cols = base + adv_cols if adv else base
-    cols = [c for c in cols if c in df.columns]
+    
+    # Further filter to sector leaders within those sectors
+    if 'is_sector_leader' in leaders.columns:
+        leaders = leaders[leaders['is_sector_leader']]
+    
+    return leaders.sort_values('composite_score', ascending=False)
 
-    out = df[cols].sort_values("sector_score", ascending=False).reset_index(drop=True)
-    num = out.select_dtypes("number").columns
-    out[num] = out[num].round(2)
-    return out
+def get_rotation_opportunities(
+    stocks_df: pd.DataFrame,
+    signal_type: str = 'rotate_into'
+) -> pd.DataFrame:
+    """
+    Get stocks from sectors with specific rotation signals
+    
+    Args:
+        stocks_df: DataFrame with sector analysis
+        signal_type: Type of rotation signal
+        
+    Returns:
+        Filtered DataFrame
+    """
+    valid_signals = ['rotate_into', 'rotate_out_of', 'accumulate', 'avoid']
+    
+    if signal_type not in valid_signals:
+        logger.error(f"Invalid signal type. Choose from {valid_signals}")
+        return pd.DataFrame()
+    
+    if 'sector_rotation_signal' not in stocks_df.columns:
+        logger.error("No rotation signals found")
+        return pd.DataFrame()
+    
+    # Map signal types to rotation signals
+    signal_mapping = {
+        'rotate_into': 'BUY',
+        'rotate_out_of': 'SELL',
+        'accumulate': 'BUY',
+        'avoid': 'SELL'
+    }
+    
+    target_signal = signal_mapping.get(signal_type, 'NEUTRAL')
+    
+    return stocks_df[
+        stocks_df['sector_rotation_signal'] == target_signal
+    ].sort_values('sector_momentum_score', ascending=False)
 
+def get_sector_summary(sector_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Get clean sector summary for display
+    
+    Args:
+        sector_df: Enhanced sector DataFrame
+        
+    Returns:
+        Summary DataFrame
+    """
+    summary_cols = [
+        'sector', 'sector_ret_30d', 'momentum_score', 
+        'rotation_signal', 'sector_category', 'final_rank'
+    ]
+    
+    available_cols = [col for col in summary_cols if col in sector_df.columns]
+    
+    return sector_df[available_cols].sort_values('final_rank')
 
-# ────────────────────────────────────────────────────────────────────────────────
-# SMALL UTILS
-# ────────────────────────────────────────────────────────────────────────────────
-
-
-def _pct(series: pd.Series) -> pd.Series:
-    """Percentile rank 0-100, NaN-safe."""
-    if series.nunique(dropna=True) < 2:
-        return pd.Series(50.0, index=series.index)
-    return series.rank(pct=True, method="average") * 100
-
-
-# ────────────────────────────────────────────────────────────────────────────────
-# DEMO – quick test run
-# ────────────────────────────────────────────────────────────────────────────────
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
-    import argparse, textwrap
-
-    p = argparse.ArgumentParser(description="Tiny demo / smoke-test")
-    p.add_argument("--demo", action="store_true")
-    args = p.parse_args()
-
-    if args.demo:
-        demo = pd.DataFrame(
-            {
-                "sector": ["Tech", "Banks", "Energy"],
-                "sector_avg_3m": [12.3, -4.1, 6.7],
-                "sector_avg_1m": [5.2, 1.2, 3.3],
-                "volatility_1m": [7.5, 12.1, 9.9],
-                "sector_count": [55, 40, 30],
-            }
-        )
-        res = compute_sector_rotation(demo)
-        print(textwrap.indent(res.to_string(index=False), prefix="\n "))
-        print("\nSummary:", sector_rotation_summary(res))
+    print("="*60)
+    print("M.A.N.T.R.A. Sector Rotation Engine")
+    print("="*60)
+    print("\nAnalyzes sector performance and rotation patterns")
+    print("\nFeatures:")
+    print("- Sector momentum scoring")
+    print("- Rotation pattern detection")
+    print("- Market regime identification")
+    print("- Sector ranking and categorization")
+    print("- Stock-level sector analysis")
+    print("\nUse analyze_sector_rotation() to start analysis")
+    print("="*60)
