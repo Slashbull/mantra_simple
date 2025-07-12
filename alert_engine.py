@@ -1,624 +1,665 @@
 """
-alert_engine.py – M.A.N.T.R.A. Elite Alert Detection Engine
-==========================================================
-Production‑grade alert system with zero false positives,
-maximum signal clarity, and infinite extensibility.
-Built for a power user who demands perfection.
+alert_engine.py - M.A.N.T.R.A. Alert Engine
+==========================================
+Real-time monitoring and alert generation for trading opportunities
+Tracks price movements, volume spikes, and signal changes
 """
 
-from __future__ import annotations
-
-import hashlib
-import json
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple, Union, Callable
-
-import numpy as np
 import pandas as pd
+import numpy as np
+import logging
+from typing import Dict, List, Optional, Tuple, Set
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from enum import Enum
 
-__all__ = [
-    "AlertPriority",
-    "AlertCategory",
-    "Alert",
-    "AlertRule",
-    "HighConvictionBuyRule",
-    "MultiSpikeAnomalyRule",
-    "SectorRotationRule",
-    "FundamentalBreakoutRule",
-    "MomentumSurgeRule",
-    "CustomVolumeBreakoutRule",
-    "AlertEngine",
-    "detect_alerts",
-    "format_alerts",
-]
+# Import from constants
+from constants import (
+    ALERT_PRIORITY, ALERT_CONDITIONS, MOMENTUM_LEVELS,
+    VOLUME_LEVELS, PRICE_POSITION
+)
 
-# ---------------------------------------------------------------------------
-# ENUMS
-# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
 
+# ============================================================================
+# ALERT TYPES AND CONFIGURATION
+# ============================================================================
+
+class AlertType(Enum):
+    """Types of alerts"""
+    PRICE_BREAKOUT = "price_breakout"
+    VOLUME_SPIKE = "volume_spike"
+    SIGNAL_CHANGE = "signal_change"
+    MOMENTUM_SHIFT = "momentum_shift"
+    PATTERN_DETECTED = "pattern_detected"
+    RISK_WARNING = "risk_warning"
+    SECTOR_ROTATION = "sector_rotation"
+    TARGET_REACHED = "target_reached"
+    STOP_LOSS_WARNING = "stop_loss_warning"
+    OPPORTUNITY = "opportunity"
 
 class AlertPriority(Enum):
-    """Alert priority levels for actionability and urgency"""
+    """Alert priority levels"""
+    CRITICAL = 1
+    HIGH = 2
+    MEDIUM = 3
+    LOW = 4
+    INFO = 5
 
-    CRITICAL = 5  # Immediate action required (major opportunities/risks)
-    HIGH = 4  # Review within hours (strong signals)
-    MEDIUM = 3  # Review today (notable patterns)
-    LOW = 2  # Review this week (emerging trends)
-    INFO = 1  # Informational only (context)
-
-
-class AlertCategory(Enum):
-    """Alert categories for filtering and routing"""
-
-    BUY_SIGNAL = "buy_signal"
-    ANOMALY = "anomaly"
-    SECTOR_ROTATION = "sector_rotation"
-    FUNDAMENTAL = "fundamental"
-    TECHNICAL = "technical"
-    VOLUME = "volume"
-    MOMENTUM = "momentum"
-    VALUE = "value"
-    RISK = "risk"
-
-
-# ---------------------------------------------------------------------------
-# CORE ALERT OBJECT
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
+@dataclass
 class Alert:
-    """Immutable alert containing all signal information"""
-
+    """Individual alert object"""
     alert_id: str
-    category: AlertCategory
+    timestamp: datetime
+    ticker: str
+    alert_type: AlertType
     priority: AlertPriority
     title: str
     message: str
-    tickers: List[str]
-    timestamp: datetime
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    conditions: List[str] = field(default_factory=list)
-
-    def __post_init__(self):  # type: ignore[override]
-        # dataclass with frozen=True calls __setattr__ via object.__setattr__
-        if not self.alert_id:
-            content = f"{self.category.value}_{self.title}_{','.join(sorted(self.tickers))}"
-            object.__setattr__(
-                self, "alert_id", hashlib.md5(content.encode()).hexdigest()[:12]
-            )
-
-    # ---------------------------------------------------------------------
-    # SERIALISATION / DISPLAY HELPERS
-    # ---------------------------------------------------------------------
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "alert_id": self.alert_id,
-            "category": self.category.value,
-            "priority": self.priority.value,
-            "title": self.title,
-            "message": self.message,
-            "tickers": self.tickers,
-            "timestamp": self.timestamp.isoformat(),
-            "metadata": self.metadata,
-            "conditions": self.conditions,
-        }
-
-    def summary(self, max_tickers: int = 5) -> str:
-        ticker_display = ", ".join(self.tickers[:max_tickers])
-        if len(self.tickers) > max_tickers:
-            ticker_display += f" (+{len(self.tickers) - max_tickers} more)"
-
-        emoji = {
-            AlertPriority.CRITICAL: "🚨",
-            AlertPriority.HIGH: "⚡",
-            AlertPriority.MEDIUM: "📊",
-            AlertPriority.LOW: "📌",
-            AlertPriority.INFO: "ℹ️",
-        }.get(self.priority, "")
-
-        return f"{emoji} {self.title}: {ticker_display}"
-
-
-# ---------------------------------------------------------------------------
-# ALERT RULE BASE CLASS
-# ---------------------------------------------------------------------------
-
-
-class AlertRule(ABC):
-    """Abstract base class for all alert rules"""
-
-    def __init__(self, name: str, category: AlertCategory, enabled: bool = True):
-        self.name = name
-        self.category = category
-        self.enabled = enabled
-
-    @abstractmethod
-    def evaluate(self, df: pd.DataFrame, context: Dict[str, Any]) -> Optional[Alert]:
-        """Return an Alert if triggered, else None"""
-
-    # ------------------------------------------------------------------
-    # UTILS
-    # ------------------------------------------------------------------
-
-    def _validate_columns(self, df: pd.DataFrame, required: List[str]) -> bool:
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            print(f"[AlertRule:{self.name}] missing columns → {missing}")
-            return False
-        return True
-
-
-# ---------------------------------------------------------------------------
-# STANDARD RULES
-# ---------------------------------------------------------------------------
-
-
-class HighConvictionBuyRule(AlertRule):
-    """Buy tag + high score (+ optional momentum)"""
-
-    def __init__(self, min_score: float = 80.0, min_tickers: int = 1, require_momentum: bool = True):
-        super().__init__("high_conviction_buy", AlertCategory.BUY_SIGNAL)
-        self.min_score = min_score
-        self.min_tickers = min_tickers
-        self.require_momentum = require_momentum
-
-    def evaluate(self, df: pd.DataFrame, context: Dict[str, Any]) -> Optional[Alert]:
-        if not self._validate_columns(df, ["ticker", "tag", "final_score"]):
-            return None
-
-        mask = (df["tag"] == "Buy") & (df["final_score"] >= self.min_score)
-        if self.require_momentum and "momentum_score" in df.columns:
-            mask &= df["momentum_score"] > 60
-
-        candidates = df[mask]
-        if len(candidates) < self.min_tickers:
-            return None
-
-        candidates = candidates.sort_values("final_score", ascending=False)
-        avg_score = candidates["final_score"].mean()
-
-        priority = (
-            AlertPriority.CRITICAL
-            if len(candidates) >= 5 and avg_score >= 85
-            else AlertPriority.HIGH
-            if len(candidates) >= 3 or avg_score >= 83
-            else AlertPriority.MEDIUM
-        )
-
-        return Alert(
-            alert_id="",
-            category=self.category,
-            priority=priority,
-            title="High‑Conviction Buy Signals",
-            message=f"{len(candidates)} stocks ≥ {self.min_score} (avg score {avg_score:.1f})",
-            tickers=candidates["ticker"].tolist(),
-            timestamp=datetime.now(),
-            metadata={"count": len(candidates), "avg_score": round(avg_score, 2)},
-            conditions=[f"final_score ≥ {self.min_score}", "tag == Buy"],
-        )
-
-
-class MultiSpikeAnomalyRule(AlertRule):
-    """Detects clusters of spike_score anomalies (optionally volume‑confirmed)"""
-
-    def __init__(self, min_spike_score: float = 3.0, min_anomalies: int = 2, check_volume: bool = True):
-        super().__init__("multi_spike_anomaly", AlertCategory.ANOMALY)
-        self.min_spike_score = min_spike_score
-        self.min_anomalies = min_anomalies
-        self.check_volume = check_volume
-
-    def evaluate(self, df: pd.DataFrame, context: Dict[str, Any]) -> Optional[Alert]:
-        required = ["ticker", "spike_score"]
-        if not self._validate_columns(df, required):
-            return None
-
-        mask = df["spike_score"] >= self.min_spike_score
-        if "anomaly" in df.columns:
-            mask &= df["anomaly"]
-        if self.check_volume and "volume_spike" in df.columns:
-            mask &= df["volume_spike"] > 2.0
-
-        anomalies = df[mask]
-        if len(anomalies) < self.min_anomalies:
-            return None
-
-        avg_spike = anomalies["spike_score"].mean()
-        max_spike = anomalies["spike_score"].max()
-
-        sector_conc = 0.0
-        if "sector" in anomalies.columns and not anomalies["sector"].empty:
-            sector_conc = anomalies["sector"].value_counts(normalize=True).iloc[0] * 100
-
-        priority = (
-            AlertPriority.CRITICAL
-            if len(anomalies) >= 5 and avg_spike >= 4.0
-            else AlertPriority.HIGH
-            if len(anomalies) >= 3 and avg_spike >= 3.5
-            else AlertPriority.MEDIUM
-        )
-
-        message = (
-            f"{len(anomalies)} anomalies (avg {avg_spike:.1f}, max {max_spike:.1f})"
-            + (f" – {sector_conc:.0f}% in one sector" if sector_conc > 40 else "")
-        )
-
-        return Alert(
-            alert_id="",
-            category=self.category,
-            priority=priority,
-            title="Multi‑Spike Anomaly Cluster",
-            message=message,
-            tickers=anomalies["ticker"].tolist(),
-            timestamp=datetime.now(),
-            metadata={"avg_spike": round(avg_spike, 2), "max_spike": round(max_spike, 2)},
-            conditions=[f"spike_score ≥ {self.min_spike_score}", f"count ≥ {self.min_anomalies}"],
-        )
-
-
-class SectorRotationRule(AlertRule):
-    """Flags hot/cold sectors based on sector_score mean"""
-
-    def __init__(self, hot_threshold: float = 85.0, cold_threshold: float = 30.0, min_sector_stocks: int = 5):
-        super().__init__("sector_rotation", AlertCategory.SECTOR_ROTATION)
-        self.hot = hot_threshold
-        self.cold = cold_threshold
-        self.min_sector_stocks = min_sector_stocks
-
-    def evaluate(self, df: pd.DataFrame, context: Dict[str, Any]) -> Optional[Alert]:
-        if not self._validate_columns(df, ["ticker", "sector", "sector_score"]):
-            return None
-
-        stats = (
-            df.groupby("sector")
-            .agg(avg_score=("sector_score", "mean"), count=("ticker", "count"))
-            .reset_index()
-        )
-        stats = stats[stats["count"] >= self.min_sector_stocks]
-        hot = stats[stats["avg_score"] >= self.hot]
-        cold = stats[stats["avg_score"] <= self.cold]
-        if hot.empty and cold.empty:
-            return None
-
-        parts, tickers = [], []
-        if not hot.empty:
-            top_hot = ", ".join(hot.sort_values("avg_score", ascending=False)["sector"].tolist())
-            parts.append(f"HOT: {top_hot}")
-            for sec in hot["sector"].tolist()[:2]:
-                tickers.extend(df[df["sector"] == sec].nlargest(3, "final_score")["ticker"].tolist())
-        if not cold.empty:
-            top_cold = ", ".join(cold.sort_values("avg_score")["sector"].tolist())
-            parts.append(f"COLD: {top_cold}")
-
-        priority = AlertPriority.HIGH if not hot.empty and hot["avg_score"].max() >= 90 else AlertPriority.MEDIUM
-
-        return Alert(
-            alert_id="",
-            category=self.category,
-            priority=priority,
-            title="Sector Rotation Signal",
-            message=" | ".join(parts),
-            tickers=tickers[:10],
-            timestamp=datetime.now(),
-            metadata={"hot": hot.to_dict("records"), "cold": cold.to_dict("records")},
-            conditions=[f"hot ≥ {self.hot}", f"cold ≤ {self.cold}"],
-        )
-
-
-class FundamentalBreakoutRule(AlertRule):
-    """Watch‑tag stocks with high eps_score and (optionally) attractive PE"""
-
-    def __init__(self, min_eps_score: float = 80.0, max_pe: float = 25.0):
-        super().__init__("fundamental_breakout", AlertCategory.FUNDAMENTAL)
-        self.min_eps = min_eps_score
-        self.max_pe = max_pe
-
-    def evaluate(self, df: pd.DataFrame, context: Dict[str, Any]) -> Optional[Alert]:
-        if not self._validate_columns(df, ["ticker", "tag", "eps_score"]):
-            return None
-
-        mask = (df["tag"] == "Watch") & (df["eps_score"] >= self.min_eps)
-        if "pe" in df.columns:
-            value_mask = (df["pe"] > 0) & (df["pe"] <= self.max_pe)
-            candidates = df[mask & value_mask]
-            if candidates.empty:
-                candidates = df[mask]
-        else:
-            candidates = df[mask]
-        if candidates.empty:
-            return None
-
-        avg_eps = candidates["eps_score"].mean()
-        priority = AlertPriority.HIGH if avg_eps >= self.min_eps + 10 else AlertPriority.MEDIUM
-
-        return Alert(
-            alert_id="",
-            category=self.category,
-            priority=priority,
-            title="Fundamental Breakout Candidates",
-            message=f"{len(candidates)} Watch stocks (avg EPS {avg_eps:.1f})",
-            tickers=candidates["ticker"].tolist(),
-            timestamp=datetime.now(),
-            metadata={"avg_eps": round(avg_eps, 2)},
-            conditions=[f"eps_score ≥ {self.min_eps}", "tag == Watch"],
-        )
-
-
-class MomentumSurgeRule(AlertRule):
-    """Short + medium‑term return surge (volume optional)"""
-
-    def __init__(self, short_term_threshold: float = 5.0, medium_term_threshold: float = 10.0, min_stocks: int = 3, check_volume: bool = True):
-        super().__init__("momentum_surge", AlertCategory.MOMENTUM)
-        self.st = short_term_threshold
-        self.mt = medium_term_threshold
-        self.min_stocks = min_stocks
-        self.check_volume = check_volume
-
-    def evaluate(self, df: pd.DataFrame, context: Dict[str, Any]) -> Optional[Alert]:
-        short_col = next((c for c in ["ret_7d", "return_1w"] if c in df.columns), None)
-        medium_col = next((c for c in ["ret_30d", "return_1m"] if c in df.columns), None)
-        if not short_col or not medium_col:
-            return None
-
-        mask = (df[short_col] >= self.st) & (df[medium_col] >= self.mt)
-        if self.check_volume:
-            vol_col = next((c for c in ["vol_ratio_1d_90d", "volume_ratio"] if c in df.columns), None)
-            if vol_col:
-                mask &= df[vol_col] > 1.5
-
-        surges = df[mask]
-        if len(surges) < self.min_stocks:
-            return None
-
-        surges = surges.assign(combined=surges[short_col] + surges[medium_col]).sort_values("combined", ascending=False)
-        avg_short = surges[short_col].mean()
-        avg_medium = surges[medium_col].mean()
-
-        priority = AlertPriority.CRITICAL if len(surges) >= 5 and avg_short >= 10 else AlertPriority.HIGH if len(surges) >= 3 and avg_short >= 7 else AlertPriority.MEDIUM
-
-        return Alert(
-            alert_id="",
-            category=self.category,
-            priority=priority,
-            title="Momentum Surge Detected",
-            message=f"{len(surges)} stocks surged ({avg_short:.1f}%/wk, {avg_medium:.1f}%/mo)",
-            tickers=surges["ticker"].tolist(),
-            timestamp=datetime.now(),
-            metadata={"avg_short": round(avg_short, 2), "avg_medium": round(avg_medium, 2)},
-            conditions=[f"{short_col} ≥ {self.st}%", f"{medium_col} ≥ {self.mt}%"],
-        )
-
-
-# ---------------------------------------------------------------------------
-# EXAMPLE CUSTOM RULE
-# ---------------------------------------------------------------------------
-
-
-class CustomVolumeBreakoutRule(AlertRule):
-    """Detects huge 1‑day volume spike + price pop"""
-
-    def __init__(self, volume_multiplier: float = 3.0, price_change_pct: float = 2.0):
-        super().__init__("volume_breakout", AlertCategory.VOLUME)
-        self.mult = volume_multiplier
-        self.pct = price_change_pct
-
-    def evaluate(self, df: pd.DataFrame, context: Dict[str, Any]) -> Optional[Alert]:
-        if not self._validate_columns(df, ["ticker", "vol_ratio_1d_90d", "ret_1d"]):
-            return None
-
-        mask = (df["vol_ratio_1d_90d"] >= self.mult) & (df["ret_1d"] >= self.pct)
-        hits = df[mask]
-        if hits.empty:
-            return None
-
-        priority = AlertPriority.HIGH if len(hits) >= 3 else AlertPriority.MEDIUM
-
-        return Alert(
-            alert_id="",
-            category=self.category,
-            priority=priority,
-            title="Volume Breakout",
-            message=f"{len(hits)} stocks volume ≥ {self.mult}× & price ≥ {self.pct}%",
-            tickers=hits["ticker"].tolist(),
-            timestamp=datetime.now(),
-            metadata={"volume_multiplier": self.mult, "price_change_pct": self.pct},
-            conditions=[f"vol_ratio_1d_90d ≥ {self.mult}", f"ret_1d ≥ {self.pct}%"],
-        )
-
-
-# ---------------------------------------------------------------------------
-# ENGINE
-# ---------------------------------------------------------------------------
-
+    metrics: Dict = field(default_factory=dict)
+    action_required: bool = False
+    expires_at: Optional[datetime] = None
+
+@dataclass
+class AlertConfig:
+    """Configuration for alert generation"""
+    # Price alerts
+    price_spike_pct: float = 5.0
+    price_crash_pct: float = -5.0
+    breakout_threshold: float = 3.0
+    
+    # Volume alerts
+    volume_spike_multiplier: float = 3.0
+    volume_dry_multiplier: float = 0.3
+    
+    # Signal alerts
+    score_improvement: float = 10.0
+    signal_upgrade: bool = True
+    
+    # Risk alerts
+    stop_loss_buffer: float = 2.0
+    target_buffer: float = 2.0
+    risk_increase: float = 20.0
+    
+    # Timing
+    alert_cooldown_hours: int = 24
+    max_alerts_per_stock: int = 3
+
+# ============================================================================
+# ALERT ENGINE
+# ============================================================================
 
 class AlertEngine:
-    """Master orchestrator running registered AlertRules"""
-
-    def __init__(self, rules: Optional[List[AlertRule]] = None, enable_deduplication: bool = True, history_limit: int = 1000):
-        self.rules: Dict[str, AlertRule] = {}
-        self.enable_dedup = enable_deduplication
-        self.history_limit = history_limit
-        self.alert_history: List[Alert] = []
-        self.last_hashes: Set[str] = set()
-        for rule in (rules if rules is not None else self._default_rules()):
-            self.register_rule(rule)
-
-    # ------------------------------------------------------------------
-    # RULE MANAGEMENT
-    # ------------------------------------------------------------------
-
-    def _default_rules(self) -> List[AlertRule]:
+    """
+    Generates and manages trading alerts
+    """
+    
+    def __init__(self, config: Optional[AlertConfig] = None):
+        self.config = config or AlertConfig()
+        self.alerts: List[Alert] = []
+        self.alert_history: Dict[str, List[datetime]] = {}
+        self.alert_counter = 0
+        
+    def generate_alerts(
+        self,
+        current_df: pd.DataFrame,
+        previous_df: Optional[pd.DataFrame] = None,
+        user_positions: Optional[Dict[str, Dict]] = None
+    ) -> List[Alert]:
+        """
+        Generate all alerts based on current market data
+        
+        Args:
+            current_df: Current market data
+            previous_df: Previous market data for comparison
+            user_positions: User's current positions
+            
+        Returns:
+            List of generated alerts
+        """
+        self.alerts = []
+        timestamp = datetime.now()
+        
+        logger.info("Generating alerts...")
+        
+        # Price-based alerts
+        self._check_price_alerts(current_df)
+        
+        # Volume-based alerts
+        self._check_volume_alerts(current_df)
+        
+        # Pattern-based alerts
+        self._check_pattern_alerts(current_df)
+        
+        # Signal changes (if previous data available)
+        if previous_df is not None:
+            self._check_signal_changes(current_df, previous_df)
+        
+        # Position-based alerts (if positions provided)
+        if user_positions:
+            self._check_position_alerts(current_df, user_positions)
+        
+        # Opportunity alerts
+        self._check_opportunity_alerts(current_df)
+        
+        # Sector rotation alerts
+        self._check_sector_alerts(current_df)
+        
+        # Filter alerts by cooldown
+        self.alerts = self._apply_cooldown(self.alerts)
+        
+        # Sort by priority
+        self.alerts.sort(key=lambda x: (x.priority.value, x.timestamp))
+        
+        logger.info(f"Generated {len(self.alerts)} alerts")
+        
+        return self.alerts
+    
+    # ========================================================================
+    # PRICE ALERTS
+    # ========================================================================
+    
+    def _check_price_alerts(self, df: pd.DataFrame):
+        """Check for price-based alerts"""
+        for _, stock in df.iterrows():
+            ticker = stock.get('ticker', '')
+            
+            # Price spike alert
+            if 'ret_1d' in stock and stock['ret_1d'] > self.config.price_spike_pct:
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.PRICE_BREAKOUT,
+                    priority=AlertPriority.HIGH,
+                    title=f"{ticker}: Price Surge +{stock['ret_1d']:.1f}%",
+                    message=f"Strong upward movement detected. Volume: {stock.get('rvol', 1):.1f}x normal",
+                    metrics={
+                        'price': stock.get('price', 0),
+                        'change_pct': stock['ret_1d'],
+                        'volume': stock.get('volume_1d', 0)
+                    }
+                )
+            
+            # Price crash alert
+            elif 'ret_1d' in stock and stock['ret_1d'] < self.config.price_crash_pct:
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.RISK_WARNING,
+                    priority=AlertPriority.HIGH,
+                    title=f"{ticker}: Price Drop {stock['ret_1d']:.1f}%",
+                    message="Significant decline detected. Review position",
+                    metrics={
+                        'price': stock.get('price', 0),
+                        'change_pct': stock['ret_1d']
+                    },
+                    action_required=True
+                )
+            
+            # 52-week high alert
+            if 'position_52w' in stock and stock['position_52w'] > 95:
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.PRICE_BREAKOUT,
+                    priority=AlertPriority.MEDIUM,
+                    title=f"{ticker}: Near 52-Week High",
+                    message="Trading within 5% of 52-week high",
+                    metrics={
+                        'position_52w': stock['position_52w'],
+                        'high_52w': stock.get('high_52w', 0)
+                    }
+                )
+            
+            # SMA breakout alert
+            if 'distance_from_sma_200d' in stock and stock['distance_from_sma_200d'] > self.config.breakout_threshold:
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.PRICE_BREAKOUT,
+                    priority=AlertPriority.MEDIUM,
+                    title=f"{ticker}: 200-DMA Breakout",
+                    message=f"Price {stock['distance_from_sma_200d']:.1f}% above 200-DMA",
+                    metrics={
+                        'price': stock.get('price', 0),
+                        'sma_200d': stock.get('sma_200d', 0)
+                    }
+                )
+    
+    # ========================================================================
+    # VOLUME ALERTS
+    # ========================================================================
+    
+    def _check_volume_alerts(self, df: pd.DataFrame):
+        """Check for volume-based alerts"""
+        for _, stock in df.iterrows():
+            ticker = stock.get('ticker', '')
+            
+            # Volume spike alert
+            if 'rvol' in stock and stock['rvol'] > self.config.volume_spike_multiplier:
+                # Check if accompanied by price movement
+                price_move = stock.get('ret_1d', 0)
+                
+                if abs(price_move) > 2:
+                    self._create_alert(
+                        ticker=ticker,
+                        alert_type=AlertType.VOLUME_SPIKE,
+                        priority=AlertPriority.HIGH,
+                        title=f"{ticker}: Volume Explosion {stock['rvol']:.1f}x",
+                        message=f"Massive volume with {price_move:+.1f}% price move",
+                        metrics={
+                            'rvol': stock['rvol'],
+                            'volume': stock.get('volume_1d', 0),
+                            'price_change': price_move
+                        }
+                    )
+                else:
+                    self._create_alert(
+                        ticker=ticker,
+                        alert_type=AlertType.VOLUME_SPIKE,
+                        priority=AlertPriority.MEDIUM,
+                        title=f"{ticker}: High Volume Alert",
+                        message="Unusual volume without significant price movement",
+                        metrics={
+                            'rvol': stock['rvol'],
+                            'volume': stock.get('volume_1d', 0)
+                        }
+                    )
+    
+    # ========================================================================
+    # PATTERN ALERTS
+    # ========================================================================
+    
+    def _check_pattern_alerts(self, df: pd.DataFrame):
+        """Check for pattern-based alerts"""
+        for _, stock in df.iterrows():
+            ticker = stock.get('ticker', '')
+            
+            # Breakout pattern
+            if stock.get('breakout_pattern', False):
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.PATTERN_DETECTED,
+                    priority=AlertPriority.HIGH,
+                    title=f"{ticker}: Breakout Pattern Detected",
+                    message="Technical breakout with volume confirmation",
+                    metrics={
+                        'pattern': 'breakout',
+                        'confidence': stock.get('edge_score', 0)
+                    }
+                )
+            
+            # Reversal pattern
+            if stock.get('reversal_pattern', False):
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.PATTERN_DETECTED,
+                    priority=AlertPriority.HIGH,
+                    title=f"{ticker}: Reversal Pattern Forming",
+                    message="Potential trend reversal detected",
+                    metrics={
+                        'pattern': 'reversal',
+                        'position_52w': stock.get('position_52w', 0)
+                    }
+                )
+            
+            # Momentum continuation
+            if stock.get('momentum_continuation', False):
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.MOMENTUM_SHIFT,
+                    priority=AlertPriority.MEDIUM,
+                    title=f"{ticker}: Strong Momentum Continues",
+                    message="Trend acceleration detected",
+                    metrics={
+                        'momentum_score': stock.get('momentum_score', 0),
+                        'trend_strength': stock.get('trend_score', 0)
+                    }
+                )
+    
+    # ========================================================================
+    # SIGNAL CHANGE ALERTS
+    # ========================================================================
+    
+    def _check_signal_changes(self, current_df: pd.DataFrame, previous_df: pd.DataFrame):
+        """Check for changes in signals between periods"""
+        # Merge on ticker to compare
+        comparison = pd.merge(
+            current_df[['ticker', 'decision', 'composite_score', 'risk_score']],
+            previous_df[['ticker', 'decision', 'composite_score', 'risk_score']],
+            on='ticker',
+            suffixes=('_now', '_prev')
+        )
+        
+        for _, row in comparison.iterrows():
+            ticker = row['ticker']
+            
+            # Decision upgrade
+            if row['decision_now'] == 'BUY' and row['decision_prev'] in ['WATCH', 'AVOID']:
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.SIGNAL_CHANGE,
+                    priority=AlertPriority.HIGH,
+                    title=f"{ticker}: Upgraded to BUY",
+                    message=f"Signal improved from {row['decision_prev']} to BUY",
+                    metrics={
+                        'score_change': row['composite_score_now'] - row['composite_score_prev'],
+                        'new_score': row['composite_score_now']
+                    },
+                    action_required=True
+                )
+            
+            # Decision downgrade
+            elif row['decision_now'] == 'AVOID' and row['decision_prev'] in ['BUY', 'WATCH']:
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.RISK_WARNING,
+                    priority=AlertPriority.HIGH,
+                    title=f"{ticker}: Downgraded to AVOID",
+                    message=f"Signal deteriorated from {row['decision_prev']} to AVOID",
+                    metrics={
+                        'score_change': row['composite_score_now'] - row['composite_score_prev'],
+                        'risk_increase': row['risk_score_now'] - row['risk_score_prev']
+                    },
+                    action_required=True
+                )
+            
+            # Significant score improvement
+            score_change = row['composite_score_now'] - row['composite_score_prev']
+            if score_change > self.config.score_improvement:
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.SIGNAL_CHANGE,
+                    priority=AlertPriority.MEDIUM,
+                    title=f"{ticker}: Score Improved +{score_change:.1f}",
+                    message="Significant improvement in composite score",
+                    metrics={
+                        'old_score': row['composite_score_prev'],
+                        'new_score': row['composite_score_now']
+                    }
+                )
+    
+    # ========================================================================
+    # POSITION ALERTS
+    # ========================================================================
+    
+    def _check_position_alerts(self, df: pd.DataFrame, positions: Dict[str, Dict]):
+        """Check alerts for user positions"""
+        for ticker, position in positions.items():
+            if ticker not in df['ticker'].values:
+                continue
+                
+            stock = df[df['ticker'] == ticker].iloc[0]
+            current_price = stock.get('price', 0)
+            buy_price = position.get('buy_price', current_price)
+            
+            # Calculate gain/loss
+            gain_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
+            
+            # Target reached
+            target = position.get('target_price', buy_price * 1.15)
+            if current_price >= target * (1 - self.config.target_buffer / 100):
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.TARGET_REACHED,
+                    priority=AlertPriority.HIGH,
+                    title=f"{ticker}: Approaching Target",
+                    message=f"Price near target ₹{target:.2f} (Gain: {gain_pct:+.1f}%)",
+                    metrics={
+                        'current_price': current_price,
+                        'target_price': target,
+                        'gain_pct': gain_pct
+                    },
+                    action_required=True
+                )
+            
+            # Stop loss warning
+            stop_loss = position.get('stop_loss', buy_price * 0.92)
+            if current_price <= stop_loss * (1 + self.config.stop_loss_buffer / 100):
+                self._create_alert(
+                    ticker=ticker,
+                    alert_type=AlertType.STOP_LOSS_WARNING,
+                    priority=AlertPriority.CRITICAL,
+                    title=f"{ticker}: Near Stop Loss",
+                    message=f"Price approaching stop loss ₹{stop_loss:.2f} (Loss: {gain_pct:.1f}%)",
+                    metrics={
+                        'current_price': current_price,
+                        'stop_loss': stop_loss,
+                        'loss_pct': gain_pct
+                    },
+                    action_required=True
+                )
+    
+    # ========================================================================
+    # OPPORTUNITY ALERTS
+    # ========================================================================
+    
+    def _check_opportunity_alerts(self, df: pd.DataFrame):
+        """Check for new opportunities"""
+        # Top opportunities
+        top_opps = df.nlargest(5, 'opportunity_score') if 'opportunity_score' in df.columns else df.nlargest(5, 'composite_score')
+        
+        for _, stock in top_opps.iterrows():
+            if stock.get('decision') == 'BUY' and stock.get('composite_score', 0) > 85:
+                self._create_alert(
+                    ticker=stock['ticker'],
+                    alert_type=AlertType.OPPORTUNITY,
+                    priority=AlertPriority.HIGH,
+                    title=f"{stock['ticker']}: High Conviction Opportunity",
+                    message=f"{stock.get('reasoning', 'Strong buy signal detected')}",
+                    metrics={
+                        'score': stock.get('composite_score', 0),
+                        'expected_return': stock.get('edge_expected_return', 0),
+                        'risk_level': stock.get('risk_level', 'Unknown')
+                    }
+                )
+    
+    # ========================================================================
+    # SECTOR ALERTS
+    # ========================================================================
+    
+    def _check_sector_alerts(self, df: pd.DataFrame):
+        """Check for sector rotation alerts"""
+        if 'sector_rotation_signal' not in df.columns:
+            return
+            
+        # Find sectors with strong rotation signals
+        sector_signals = df.groupby('sector')['sector_rotation_signal'].agg(
+            lambda x: x.mode()[0] if len(x) > 0 else 'NEUTRAL'
+        )
+        
+        for sector, signal in sector_signals.items():
+            if signal == 'BUY':
+                # Count stocks in sector with buy signals
+                sector_buys = df[(df['sector'] == sector) & (df['decision'] == 'BUY')]
+                
+                if len(sector_buys) >= 3:
+                    self._create_alert(
+                        ticker=f"SECTOR:{sector[:10]}",
+                        alert_type=AlertType.SECTOR_ROTATION,
+                        priority=AlertPriority.MEDIUM,
+                        title=f"Sector Alert: {sector}",
+                        message=f"Strong rotation into {sector} sector ({len(sector_buys)} buy signals)",
+                        metrics={
+                            'sector': sector,
+                            'buy_count': len(sector_buys),
+                            'top_stock': sector_buys.iloc[0]['ticker'] if len(sector_buys) > 0 else ''
+                        }
+                    )
+    
+    # ========================================================================
+    # ALERT MANAGEMENT
+    # ========================================================================
+    
+    def _create_alert(
+        self,
+        ticker: str,
+        alert_type: AlertType,
+        priority: AlertPriority,
+        title: str,
+        message: str,
+        metrics: Dict = None,
+        action_required: bool = False
+    ):
+        """Create and add an alert"""
+        self.alert_counter += 1
+        
+        alert = Alert(
+            alert_id=f"ALERT_{self.alert_counter:05d}",
+            timestamp=datetime.now(),
+            ticker=ticker,
+            alert_type=alert_type,
+            priority=priority,
+            title=title,
+            message=message,
+            metrics=metrics or {},
+            action_required=action_required,
+            expires_at=datetime.now() + timedelta(hours=24)
+        )
+        
+        self.alerts.append(alert)
+        
+        # Update history
+        if ticker not in self.alert_history:
+            self.alert_history[ticker] = []
+        self.alert_history[ticker].append(alert.timestamp)
+    
+    def _apply_cooldown(self, alerts: List[Alert]) -> List[Alert]:
+        """Apply cooldown period to prevent alert spam"""
+        filtered_alerts = []
+        current_time = datetime.now()
+        
+        for alert in alerts:
+            ticker = alert.ticker
+            
+            # Check cooldown
+            if ticker in self.alert_history:
+                recent_alerts = [
+                    t for t in self.alert_history[ticker]
+                    if current_time - t < timedelta(hours=self.config.alert_cooldown_hours)
+                ]
+                
+                if len(recent_alerts) >= self.config.max_alerts_per_stock:
+                    continue
+            
+            filtered_alerts.append(alert)
+        
+        return filtered_alerts
+    
+    def get_alerts_by_priority(
+        self,
+        priorities: List[AlertPriority]
+    ) -> List[Alert]:
+        """Get alerts filtered by priority"""
         return [
-            HighConvictionBuyRule(),
-            MultiSpikeAnomalyRule(),
-            SectorRotationRule(),
-            FundamentalBreakoutRule(),
-            MomentumSurgeRule(),
+            alert for alert in self.alerts
+            if alert.priority in priorities
+        ]
+    
+    def get_alerts_by_type(
+        self,
+        alert_types: List[AlertType]
+    ) -> List[Alert]:
+        """Get alerts filtered by type"""
+        return [
+            alert for alert in self.alerts
+            if alert.alert_type in alert_types
+        ]
+    
+    def get_action_required_alerts(self) -> List[Alert]:
+        """Get alerts that require immediate action"""
+        return [
+            alert for alert in self.alerts
+            if alert.action_required
         ]
 
-    def register_rule(self, rule: AlertRule) -> None:
-        self.rules[rule.name] = rule
+# ============================================================================
+# CONVENIENCE FUNCTIONS
+# ============================================================================
 
-    def unregister_rule(self, name: str) -> bool:
-        return self.rules.pop(name, None) is not None
+def generate_alerts(
+    current_data: pd.DataFrame,
+    previous_data: Optional[pd.DataFrame] = None,
+    positions: Optional[Dict[str, Dict]] = None,
+    config: Optional[AlertConfig] = None
+) -> List[Alert]:
+    """
+    Generate trading alerts
+    
+    Args:
+        current_data: Current market data
+        previous_data: Previous data for comparison
+        positions: User positions
+        config: Alert configuration
+        
+    Returns:
+        List of alerts
+    """
+    engine = AlertEngine(config)
+    return engine.generate_alerts(current_data, previous_data, positions)
 
-    def get_available_rules(self) -> List[str]:
-        return list(self.rules.keys())
+def get_critical_alerts(alerts: List[Alert]) -> List[Alert]:
+    """Get only critical and high priority alerts"""
+    return [
+        alert for alert in alerts
+        if alert.priority in [AlertPriority.CRITICAL, AlertPriority.HIGH]
+    ]
 
-    # ------------------------------------------------------------------
-    # DETECTION
-    # ------------------------------------------------------------------
-
-    def detect_alerts(self, df: pd.DataFrame, context: Optional[Dict[str, Any]] = None) -> List[Alert]:
-        if df.empty:
-            return []
-        context = context or {}
-        alerts: List[Alert] = []
-        for rule in self.rules.values():
-            if not rule.enabled:
-                continue
-            try:
-                alert = rule.evaluate(df, context)
-                if alert is not None:
-                    alerts.append(alert)
-            except Exception as exc:
-                print(f"[AlertEngine] rule '{rule.name}' errored → {exc}")
-        if self.enable_dedup:
-            alerts = self._deduplicate(alerts)
-        self._update_history(alerts)
-        return alerts
-
-    # ------------------------------------------------------------------
-    # HELPERS
-    # ------------------------------------------------------------------
-
-    def _deduplicate(self, alerts: List[Alert]) -> List[Alert]:
-        fresh, hashes = [], set()
-        for alert in alerts:
-            h = hashlib.md5(f"{alert.category.value}_{alert.title}_{','.join(sorted(alert.tickers))}".encode()).hexdigest()
-            if h not in self.last_hashes:
-                fresh.append(alert)
-                hashes.add(h)
-        self.last_hashes = hashes
-        return fresh
-
-    def _update_history(self, alerts: List[Alert]) -> None:
-        self.alert_history.extend(alerts)
-        if len(self.alert_history) > self.history_limit:
-            self.alert_history = self.alert_history[-self.history_limit :]
-
-    # ------------------------------------------------------------------
-    # FORMATTING
-    # ------------------------------------------------------------------
-
-    def format_alerts(self, alerts: List[Alert], mode: str = "summary") -> str:
-        if not alerts:
-            return "✅ No new alerts detected."
-        if mode == "json":
-            return json.dumps([a.to_dict() for a in alerts], indent=2)
-        if mode not in {"summary", "detailed"}:
-            raise ValueError(f"Unknown format mode '{mode}'")
-
-        if mode == "summary":
-            lines = ["🎯 ALERTS", "--------------------------"]
-            for pr in sorted({a.priority for a in alerts}, reverse=True):
-                lines.append(f"\n{pr.name} priority:")
-                for a in filter(lambda x: x.priority == pr, alerts):
-                    lines.append(f"  {a.summary()}")
-            return "\n".join(lines)
-
-        # detailed
-        lines = ["📊 DETAILED ALERT REPORT", "=" * 50]
-        for idx, a in enumerate(alerts, 1):
-            lines.extend([
-                f"\n[{idx}] {a.title} ({a.priority.name})",
-                f"Msg   : {a.message}",
-                f"Tickers: {', '.join(a.tickers[:10])}",
-                f"Time  : {a.timestamp:%Y-%m-%d %H:%M:%S}",
-                f"Conditions: {' | '.join(a.conditions)}",
-            ])
-            if a.metadata:
-                lines.append(f"Meta : {a.metadata}")
-        return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # STATS
-    # ------------------------------------------------------------------
-
-    def stats(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"total_alerts": len(self.alert_history)}
-        if not self.alert_history:
-            return out
-        by_cat, by_pri, tickers: Dict[str, int], Dict[str, int], Set[str]
-        by_cat, by_pri, tickers = {}, {}, set()
-        for a in self.alert_history:
-            by_cat[a.category.value] = by_cat.get(a.category.value, 0) + 1
-            by_pri[a.priority.name] = by_pri.get(a.priority.name, 0) + 1
-            tickers.update(a.tickers)
-        out.update({
-            "by_category": by_cat,
-            "by_priority": by_pri,
-            "unique_tickers": len(tickers),
-            "last_alert_time": self.alert_history[-1].timestamp.isoformat(),
+def format_alert_summary(alerts: List[Alert]) -> pd.DataFrame:
+    """Format alerts as a summary DataFrame"""
+    if not alerts:
+        return pd.DataFrame()
+    
+    summary_data = []
+    for alert in alerts:
+        summary_data.append({
+            'Time': alert.timestamp.strftime('%H:%M'),
+            'Ticker': alert.ticker,
+            'Type': alert.alert_type.value,
+            'Priority': alert.priority.name,
+            'Title': alert.title,
+            'Action': '🚨' if alert.action_required else ''
         })
-        return out
+    
+    return pd.DataFrame(summary_data)
 
+def get_alert_statistics(alerts: List[Alert]) -> Dict:
+    """Get statistics about alerts"""
+    if not alerts:
+        return {'total': 0}
+    
+    stats = {
+        'total': len(alerts),
+        'by_priority': {},
+        'by_type': {},
+        'action_required': len([a for a in alerts if a.action_required]),
+        'unique_tickers': len(set(a.ticker for a in alerts))
+    }
+    
+    # Count by priority
+    for priority in AlertPriority:
+        count = len([a for a in alerts if a.priority == priority])
+        if count > 0:
+            stats['by_priority'][priority.name] = count
+    
+    # Count by type
+    for alert_type in AlertType:
+        count = len([a for a in alerts if a.alert_type == alert_type])
+        if count > 0:
+            stats['by_type'][alert_type.value] = count
+    
+    return stats
 
-# ---------------------------------------------------------------------------
-# CONVENIENCE WRAPPERS
-# ---------------------------------------------------------------------------
-
-def detect_alerts(df: pd.DataFrame, last_hashes: Optional[Set[str]] = None, rules: Optional[List[AlertRule]] = None) -> List[Alert]:
-    engine = AlertEngine(rules=rules, enable_deduplication=bool(last_hashes))
-    if last_hashes:
-        engine.last_hashes = last_hashes
-    return engine.detect_alerts(df)
-
-
-def format_alerts(alerts: Union[List[Alert], Set[str]], mode: str = "summary") -> str:
-    if isinstance(alerts, set):  # legacy hash set → no new alerts
-        return "✅ No new alerts detected." if not alerts else "Deprecated format"
-    engine = AlertEngine()
-    return engine.format_alerts(alerts, mode)
-
-
-# ---------------------------------------------------------------------------
-# CLI SELF‑TEST
-# ---------------------------------------------------------------------------
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
-    print("🔧 Self‑test: building dummy DataFrame …")
-    dummy = pd.DataFrame({
-        "ticker": ["ABC", "DEF", "GHI", "JKL"],
-        "tag": ["Buy", "Buy", "Watch", "Watch"],
-        "final_score": [85, 87, 75, 60],
-        "momentum_score": [65, 70, 50, 40],
-        "ret_7d": [6, 8, 1, -2],
-        "ret_30d": [12, 15, 3, -1],
-        "vol_ratio_1d_90d": [3.5, 1.2, 0.9, 4.0],
-        "ret_1d": [3, 0.5, -0.2, 5],
-        "spike_score": [3.2, 0.5, 0.2, 4.1],
-        "anomaly": [True, False, False, True],
-        "volume_spike": [2.5, 0.8, 1.0, 3.0],
-        "sector": ["Tech", "Tech", "Auto", "Auto"],
-        "sector_score": [92, 92, 25, 25],
-        "eps_score": [82, 85, 90, 60],
-        "pe": [18, 21, 11, 35],
-    })
-
-    eng = AlertEngine(rules=[
-        HighConvictionBuyRule(),
-        MultiSpikeAnomalyRule(),
-        SectorRotationRule(),
-        FundamentalBreakoutRule(),
-        MomentumSurgeRule(),
-        CustomVolumeBreakoutRule(),
-    ])
-
-    alerts_list = eng.detect_alerts(dummy)
-    print(eng.format_alerts(alerts_list, mode="summary"))
-    print("\nStats:", json.dumps(eng.stats(), indent=2))
+    print("="*60)
+    print("M.A.N.T.R.A. Alert Engine")
+    print("="*60)
+    print("\nReal-time monitoring and alert generation")
+    print("\nAlert Types:")
+    for alert_type in AlertType:
+        print(f"  - {alert_type.value}")
+    print("\nPriority Levels:")
+    for priority in AlertPriority:
+        print(f"  - {priority.name}: {priority.value}")
+    print("\nUse generate_alerts() to monitor market")
+    print("="*60)
