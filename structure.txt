@@ -1,26 +1,209 @@
+================================================================================
+M.A.N.T.R.A. - Market Analysis Neural Trading Research Assistant
+================================================================================
+FINAL PROJECT STRUCTURE - LOCKED & PERMANENT
+Version: 1.0.0 FINAL
+Philosophy: "All signal, no noise. Decisions, not guesses."
+================================================================================
+
 /mantra/
 │
-├── alert_engine.py            # All alert logic (Buy, spike, sector, EPS) for dashboard
+├── streamlit_dashboard.py     # Main Streamlit app UI (entry point: streamlit run streamlit_dashboard.py)
+├── ui_components.py           # Reusable UI components (cards, badges, charts, alerts)
+├── core_system_foundation.py  # Data loading, cleaning, validation, caching, schema enforcement
+├── constants.py               # All configuration, thresholds, URLs, magic numbers
+├── signal_engine.py           # Multi-factor scoring (momentum, value, technical, volume)
+├── decision_engine.py         # Buy/Watch/Avoid tagger with targets, risk, reasoning
 ├── anomaly_detector.py        # Detects price/volume/EPS anomalies, spikes, reversals
-├── core_system_foundation.py  # Data loading, cleaning, schema validation, summary
-├── decision_engine.py         # Buy/Watch/Avoid tagger, target, risk, upside, logic
-├── edge_finder.py             # Edge setups: breakouts, value, volatility, sector leaders
-├── filters.py                 # All dashboard filters (tag, sector, category, etc.)
-├── health_panel.py            # Sidebar data health/diagnostics (optional, advanced)
-├── regime_shifter.py          # Regime presets, auto-detect, weights (momentum/value/...)
-├── sector_mapper.py           # Sector scores, quartile ranking, heatmap/rotation signals
-├── sector_rotation_engine.py  # Sector rotation analytics (heatmap, trends, regime hints)
-├── signal_engine.py           # All scoring logic (momentum, value, EPS, sector, volume)
-├── streamlit_dashboard.py     # Main Streamlit app/dashboard UI (entry point)
-├── watchlist_builder.py       # Watchlist & opportunity builders (top-N, sector leaders, etc.)
-opportunity_finder.py
-quick_scanner.py 
-best_buy_finder.py
-quick_start.py
-report.py
+├── edge_finder.py             # Special setups: breakouts, value plays, sector leaders
+├── sector_rotation_engine.py  # Sector analysis, rotation signals, heatmaps, trends
+├── watchlist_builder.py       # Generate filtered lists (top buys, sector leaders, etc.)
+├── alert_engine.py            # Real-time alerts (buy signals, spikes, anomalies)
+├── filters.py                 # Dashboard filters (sector, mcap, price, signals)
+├── regime_shifter.py          # Market regime detection (momentum/value/balanced)
+├── health_panel.py            # Data health monitoring, diagnostics, quality checks
 │
-├── requirements.txt           # [Optional] Python requirements (pandas, streamlit, numpy, etc.)
-├── README.md                  # [Optional] Project description, usage, FAQ, credits
-│
-└── structure.txt              # This file: locked directory structure for reference
-  
+├── requirements.txt           # Python dependencies
+├── README.md                  # Project documentation
+└── structure.txt              # This file (project structure reference)
+
+================================================================================
+MODULE DESCRIPTIONS & RESPONSIBILITIES
+================================================================================
+
+1. streamlit_dashboard.py [ENTRY POINT]
+   - Main UI layout and navigation
+   - Page routing and state management
+   - Calls all other modules to display data
+   - Theme and styling setup
+   - Never contains business logic
+
+2. ui_components.py [UI LIBRARY]
+   - signal_badge(): Beautiful Buy/Watch/Avoid badges
+   - metric_card(): Elegant metric displays with trends
+   - stock_card(): Rich stock information cards
+   - sector_heatmap(): Interactive sector visualization
+   - trend_sparkline(): Mini inline charts
+   - alert_banner(): Clean alert notifications
+   - floating_summary(): Key metrics that follow scroll
+
+3. core_system_foundation.py [DATA LAYER]
+   - DataLoader class: Load from Google Sheets/CSV URLs
+   - DataValidator: Schema validation, type checking
+   - DataCleaner: Handle nulls, convert types, fix formats
+   - CacheManager: Session-based caching
+   - get_all_data(): Main function returning all dataframes
+
+4. constants.py [CONFIGURATION]
+   - Data source URLs/Sheet IDs
+   - Score thresholds (BUY=85, WATCH=70, etc.)
+   - Percentage thresholds (spike=10%, unusual=5x volume)
+   - EPS tier definitions
+   - Price tier boundaries  
+   - Column mappings
+   - UI settings
+
+5. signal_engine.py [SCORING ENGINE]
+   - calculate_momentum_score(): Multi-period return analysis
+   - calculate_value_score(): PE, EPS growth, price levels
+   - calculate_technical_score(): SMA positions, trends
+   - calculate_volume_score(): Volume patterns, spikes
+   - calculate_sector_score(): Sector relative performance
+   - get_composite_score(): Weighted final score
+
+6. decision_engine.py [DECISION MAKER]
+   - evaluate_stock(): Run all checks
+   - assign_signal(): BUY/WATCH/AVOID decision
+   - calculate_target(): Price targets
+   - assess_risk(): Risk level (LOW/MEDIUM/HIGH)
+   - generate_reason(): Human-readable explanation
+   - get_opportunity_score(): Upside potential
+
+7. anomaly_detector.py [PATTERN DETECTOR]
+   - detect_price_spike(): Unusual price movements
+   - detect_volume_anomaly(): Volume spikes/droughts
+   - detect_eps_surprise(): EPS changes
+   - detect_52w_proximity(): Near highs/lows
+   - detect_reversal_pattern(): Trend reversals
+   - get_anomaly_alerts(): All anomalies for stock
+
+8. edge_finder.py [OPPORTUNITY SCANNER]
+   - find_breakouts(): Technical breakout patterns
+   - find_value_plays(): Undervalued opportunities
+   - find_momentum_leaders(): Strongest trends
+   - find_sector_rotation(): Sector shift plays
+   - find_volatility_setups(): High probability trades
+   - get_edge_opportunities(): All special setups
+
+9. sector_rotation_engine.py [SECTOR ANALYSIS]
+   - calculate_sector_momentum(): Sector trends
+   - identify_rotation(): Money flow between sectors
+   - rank_sectors(): Performance ranking
+   - get_sector_signals(): Buy/sell sector signals
+   - generate_heatmap_data(): Visualization data
+   - predict_next_leaders(): Forward-looking analysis
+
+10. watchlist_builder.py [LIST GENERATOR]
+    - build_top_buys(): Highest conviction buys
+    - build_momentum_leaders(): Strongest movers
+    - build_value_picks(): Best value plays
+    - build_sector_leaders(): Top per sector
+    - build_custom_watchlist(): User criteria
+    - export_watchlist(): Download functionality
+
+11. alert_engine.py [ALERT SYSTEM]
+    - check_buy_signals(): New buy opportunities
+    - check_breakouts(): Price breakouts
+    - check_volume_spikes(): Unusual volume
+    - check_eps_alerts(): Earnings surprises
+    - check_sector_rotation(): Sector shifts
+    - get_priority_alerts(): Ranked by importance
+
+12. filters.py [FILTER CONTROLS]
+    - SignalFilter: BUY/WATCH/AVOID filter
+    - SectorFilter: Sector selection
+    - MarketCapFilter: Large/Mid/Small cap
+    - PriceRangeFilter: Price brackets
+    - PerformanceFilter: Return ranges
+    - CustomFilter: Advanced filtering
+    - apply_all_filters(): Chain filters
+
+13. regime_shifter.py [MARKET REGIME]
+    - detect_market_regime(): Current market type
+    - calculate_breadth(): Market participation
+    - assess_momentum_strength(): Trend strength
+    - get_regime_weights(): Factor weightings
+    - suggest_strategy(): Regime-appropriate approach
+    - auto_adjust_thresholds(): Dynamic thresholds
+
+14. health_panel.py [SYSTEM HEALTH]
+    - check_data_freshness(): Last update time
+    - validate_data_quality(): Missing/invalid data
+    - monitor_system_performance(): Load times
+    - check_threshold_effectiveness(): Signal quality
+    - generate_health_report(): Summary stats
+    - show_diagnostics_panel(): UI component
+
+================================================================================
+DATA FLOW
+================================================================================
+
+1. User opens dashboard → streamlit_dashboard.py
+2. Load data → core_system_foundation.py
+3. Calculate signals → signal_engine.py
+4. Detect anomalies → anomaly_detector.py
+5. Analyze sectors → sector_rotation_engine.py
+6. Determine regime → regime_shifter.py
+7. Make decisions → decision_engine.py
+8. Find opportunities → edge_finder.py
+9. Generate alerts → alert_engine.py
+10. Build lists → watchlist_builder.py
+11. Apply filters → filters.py
+12. Display UI → ui_components.py
+13. Monitor health → health_panel.py
+
+================================================================================
+KEY DESIGN PRINCIPLES
+================================================================================
+
+1. MODULARITY: Each module has ONE clear responsibility
+2. NO OVERLAP: Functions never duplicated across modules
+3. DATA FLOWS DOWN: UI never directly accesses data
+4. ERRORS HANDLED: Every module handles errors gracefully
+5. CONFIGURABLE: All magic numbers in constants.py
+6. CACHED: Data loaded once per session
+7. FAST: Every operation optimized for speed
+8. BEAUTIFUL: UI components reusable and consistent
+9. EXPLAINABLE: Every decision has clear reasoning
+10. RELIABLE: System never crashes, always shows something
+
+================================================================================
+FILE DEPENDENCIES
+================================================================================
+
+requirements.txt:
+----------------
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.17.0
+requests>=2.31.0
+openpyxl>=3.1.0
+
+================================================================================
+NOTES
+================================================================================
+
+- This structure is FINAL and LOCKED
+- No new modules should be added
+- Each module is essential - removing any breaks functionality
+- Built for personal use, not mass market
+- Optimized for Indian stock market (NSE/BSE)
+- All data from Google Sheets/CSV URLs only
+- No external APIs except data sources
+- No user authentication needed
+- No database required
+
+================================================================================
+END OF STRUCTURE
+================================================================================
