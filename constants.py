@@ -1,12 +1,12 @@
 """
 constants.py - M.A.N.T.R.A. Configuration
 ========================================
-All configuration, thresholds, and settings in one place
+FINAL VERSION - All configuration, thresholds, and settings in one place
 Simple, clear, and easy to modify
 """
 
 # ============================================================================
-# DATA SOURCES
+# DATA SOURCES - UPDATE THESE WITH YOUR ACTUAL URLS!
 # ============================================================================
 
 # Google Sheets Configuration
@@ -18,7 +18,7 @@ SHEET_CONFIGS = {
         "name": "ALL STOCKS 2025 Watchlist"
     },
     "sector": {
-        "gid": "140104095",
+        "gid": "140104095", 
         "name": "ALL STOCKS 2025 Sector Analysis"
     },
     "returns": {
@@ -26,6 +26,17 @@ SHEET_CONFIGS = {
         "name": "Stock Return Analysis"
     }
 }
+
+# Complete URLs for data sources (constructed from above)
+DATA_SOURCES = {
+    'WATCHLIST': f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_CONFIGS['watchlist']['gid']}",
+    'SECTOR_ANALYSIS': f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_CONFIGS['sector']['gid']}",
+    'STOCK_RETURNS': f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_CONFIGS['returns']['gid']}"
+}
+
+# Cache settings
+CACHE_DURATION_MINUTES = 15  # Refresh data every 15 minutes
+ENABLE_CACHING = True
 
 # ============================================================================
 # SIGNAL THRESHOLDS
@@ -41,7 +52,14 @@ SIGNAL_LEVELS = {
     "STRONG_AVOID": 20
 }
 
-# Factor weights for composite scoring
+# For backward compatibility
+SIGNAL_THRESHOLDS = {
+    'BUY': SIGNAL_LEVELS['BUY'],
+    'WATCH': SIGNAL_LEVELS['WATCH'],
+    'AVOID': SIGNAL_LEVELS['AVOID']
+}
+
+# Factor weights for composite scoring (must sum to 1.0)
 FACTOR_WEIGHTS = {
     "momentum": 0.30,      # 30% - Recent price performance
     "value": 0.25,         # 25% - Valuation metrics
@@ -49,6 +67,9 @@ FACTOR_WEIGHTS = {
     "volume": 0.15,        # 15% - Volume activity
     "fundamentals": 0.10   # 10% - EPS, sector strength
 }
+
+# Alternative name for compatibility
+SCORE_WEIGHTS = FACTOR_WEIGHTS.copy()
 
 # ============================================================================
 # MOMENTUM SETTINGS
@@ -82,6 +103,34 @@ MOMENTUM_LEVELS = {
     }
 }
 
+# Alternative format for compatibility
+MOMENTUM_THRESHOLDS = {
+    'EXTREME_BULLISH': {
+        '1D': 5.0,    # 1-day return > 5%
+        '7D': 10.0,   # 7-day return > 10%
+        '30D': 15.0,  # 30-day return > 15%
+        '3M': 25.0,   # 3-month return > 25%
+    },
+    'BULLISH': {
+        '1D': 2.0,
+        '7D': 5.0,
+        '30D': 8.0,
+        '3M': 15.0,
+    },
+    'NEUTRAL': {
+        '1D': -1.0,
+        '7D': -2.0,
+        '30D': -3.0,
+        '3M': -5.0,
+    },
+    'BEARISH': {
+        '1D': -3.0,
+        '7D': -7.0,
+        '30D': -10.0,
+        '3M': -15.0,
+    }
+}
+
 # ============================================================================
 # VALUE SETTINGS
 # ============================================================================
@@ -93,6 +142,31 @@ PE_RANGES = {
     "overvalued": (25, 40),
     "expensive": (40, float('inf')),
     "negative": (float('-inf'), 0)  # Loss-making
+}
+
+# Value thresholds
+VALUE_THRESHOLDS = {
+    'PE_RATIO': {
+        'DEEP_VALUE': 12,      # PE < 12 = Deep value
+        'VALUE': 18,           # PE < 18 = Value
+        'FAIR': 25,            # PE < 25 = Fair
+        'EXPENSIVE': 35,       # PE < 35 = Expensive
+        'BUBBLE': 50,          # PE > 50 = Bubble territory
+    },
+    'EPS_GROWTH': {
+        'HYPER': 50,          # EPS growth > 50% = Hyper growth
+        'HIGH': 25,           # EPS growth > 25% = High growth
+        'MODERATE': 15,       # EPS growth > 15% = Moderate
+        'LOW': 5,             # EPS growth > 5% = Low growth
+        'NEGATIVE': 0,        # EPS growth < 0 = Declining
+    },
+    'PRICE_TO_52W': {
+        'NEAR_LOW': 10,       # Within 10% of 52w low = Oversold
+        'CHEAP': 25,          # Within 25% of 52w low = Cheap
+        'MIDDLE': 50,         # Middle of range
+        'EXPENSIVE': 75,      # Within 25% of 52w high
+        'NEAR_HIGH': 90,      # Within 10% of 52w high = Overbought
+    }
 }
 
 # EPS Growth ranges
@@ -113,6 +187,24 @@ MA_PERIODS = {
     "short": 20,
     "medium": 50,
     "long": 200
+}
+
+# Technical thresholds
+TECHNICAL_THRESHOLDS = {
+    'SMA_POSITIONS': {
+        'STRONG_BULLISH': 'ABOVE_ALL',     # Price > SMA20 > SMA50 > SMA200
+        'BULLISH': 'ABOVE_200',            # Price > SMA200
+        'NEUTRAL': 'BETWEEN',              # Mixed signals
+        'BEARISH': 'BELOW_200',            # Price < SMA200
+        'STRONG_BEARISH': 'BELOW_ALL',     # Price < all SMAs
+    },
+    'SMA_DISTANCE': {
+        'FAR_ABOVE': 10,      # Price > 10% above SMA
+        'ABOVE': 5,           # Price > 5% above SMA
+        'NEAR': 2,            # Price within 2% of SMA
+        'BELOW': -5,          # Price > 5% below SMA
+        'FAR_BELOW': -10,     # Price > 10% below SMA
+    }
 }
 
 # Price position thresholds
@@ -145,6 +237,27 @@ VOLUME_LEVELS = {
     "normal": 1.0,          # Normal volume
     "low": 0.5,             # Half normal
     "dry": 0.2              # Very low volume
+}
+
+# Volume thresholds for alerts
+VOLUME_THRESHOLDS = {
+    'SPIKE_MULTIPLIER': 3.0,         # Volume > 3x average = Spike
+    'HIGH_MULTIPLIER': 2.0,          # Volume > 2x average = High
+    'NORMAL_RANGE': (0.7, 1.3),      # 70% to 130% of average
+    'LOW_MULTIPLIER': 0.5,           # Volume < 50% average = Low
+    'DRY_MULTIPLIER': 0.3,           # Volume < 30% average = Dry
+    
+    'VOLUME_TREND': {
+        'ACCUMULATION': 1.5,         # Rising volume > 1.5x trend
+        'DISTRIBUTION': 0.7,         # Falling volume < 0.7x trend
+    },
+    
+    'RVOL_THRESHOLDS': {
+        'EXTREME': 5.0,    # RVOL > 5 = Extreme activity
+        'HIGH': 2.0,       # RVOL > 2 = High activity
+        'NORMAL': 1.0,     # RVOL ~1 = Normal
+        'LOW': 0.5,        # RVOL < 0.5 = Low activity
+    }
 }
 
 # Volume trend thresholds (% change)
@@ -242,6 +355,14 @@ COLORS = {
     "muted": "#888888"      # Gray
 }
 
+# Signal colors for UI
+SIGNAL_COLORS = {
+    'BUY': '#00d26a',       # Green
+    'WATCH': '#ffa500',     # Orange
+    'AVOID': '#ff4b4b',     # Red
+    'NEUTRAL': '#808080',   # Gray
+}
+
 # Number formatting
 NUMBER_FORMAT = {
     "price": "{:,.2f}",
@@ -334,20 +455,152 @@ MARKET_REGIMES = {
 # Sector groupings for analysis
 SECTOR_GROUPS = {
     "Defensive": [
-        "FMCG", "Pharmaceuticals", "Utilities", "Telecommunications"
+        "FMCG", "Pharmaceuticals", "Utilities", "Telecommunications",
+        "Consumer Goods", "Healthcare Services"
     ],
     "Cyclical": [
         "Automobiles & Auto Parts", "Banks", "Real Estate", 
-        "Machinery, Equipment & Components"
+        "Machinery, Equipment & Components", "Construction", "Hotels & Tourism"
     ],
     "Growth": [
         "Software & IT Services", "Internet & E-Commerce", 
-        "Biotechnology", "Renewable Energy"
+        "Biotechnology", "Renewable Energy", "Technology Hardware"
     ],
     "Commodity": [
         "Metals & Mining", "Oil & Gas", "Chemicals", 
-        "Agriculture & Allied"
+        "Agriculture & Allied", "Paper & Forest Products"
     ]
+}
+
+# ============================================================================
+# FILTERS AND RANGES
+# ============================================================================
+
+# Price range filters
+PRICE_RANGE_FILTERS = {
+    'ALL': (0, float('inf')),
+    'PENNY': (0, 50),
+    'LOW': (50, 250),
+    'MID': (250, 1000),
+    'HIGH': (1000, 5000),
+    'PREMIUM': (5000, float('inf')),
+}
+
+# Default filter settings
+DEFAULT_FILTERS = {
+    'SIGNAL': 'ALL',
+    'SECTOR': 'ALL',
+    'MARKET_CAP': 'ALL',
+    'PRICE_RANGE': 'ALL',
+    'MIN_VOLUME': 10000,
+    'SHOW_ONLY_ALERTS': False,
+}
+
+# ============================================================================
+# COLUMN MAPPINGS (for handling different column names)
+# ============================================================================
+
+COLUMN_MAPPINGS = {
+    'PRICE': ['price', 'close', 'last_price', 'current_price'],
+    'VOLUME': ['volume_1d', 'volume', 'vol', 'daily_volume'],
+    'PE': ['pe', 'pe_ratio', 'price_earnings'],
+    'EPS': ['eps_current', 'eps', 'earnings_per_share'],
+    'MARKET_CAP': ['market_cap', 'mcap', 'mkt_cap'],
+}
+
+# ============================================================================
+# VALIDATION RULES
+# ============================================================================
+
+VALIDATION_RULES = {
+    'PRICE': {'min': 0, 'max': 1000000},
+    'PE': {'min': -100, 'max': 1000},
+    'VOLUME': {'min': 0, 'max': 1e12},
+    'RETURNS': {'min': -100, 'max': 1000},
+    'EPS': {'min': -1000, 'max': 1000},
+}
+
+# ============================================================================
+# EPS TIERS CONFIGURATION
+# ============================================================================
+
+EPS_TIERS = {
+    '95↑': {'min': 95, 'label': 'Elite', 'color': '#00ff00'},
+    '75↑': {'min': 75, 'label': 'Excellent', 'color': '#32cd32'},
+    '55↑': {'min': 55, 'label': 'Strong', 'color': '#90ee90'},
+    '35↑': {'min': 35, 'label': 'Good', 'color': '#98fb98'},
+    '15↑': {'min': 15, 'label': 'Above Avg', 'color': '#f0e68c'},
+    '5↑': {'min': 5, 'label': 'Average', 'color': '#ffffe0'},
+    '0': {'min': 0, 'label': 'Neutral', 'color': '#ffffff'},
+    '5↓': {'min': -5, 'label': 'Below Avg', 'color': '#ffd700'},
+    '15↓': {'min': -15, 'label': 'Weak', 'color': '#ffa500'},
+    '35↓': {'min': -35, 'label': 'Poor', 'color': '#ff8c00'},
+    '55↓': {'min': -55, 'label': 'Very Poor', 'color': '#ff6347'},
+}
+
+# ============================================================================
+# PRICE TIERS CONFIGURATION
+# ============================================================================
+
+PRICE_TIERS = {
+    '10K↑': {'min': 10000, 'label': 'Ultra Premium'},
+    '5K↑': {'min': 5000, 'label': 'Premium'},
+    '2K↑': {'min': 2000, 'label': 'High'},
+    '1K↑': {'min': 1000, 'label': 'Mid-High'},
+    '500↑': {'min': 500, 'label': 'Mid'},
+    '250↑': {'min': 250, 'label': 'Mid-Low'},
+    '100↑': {'min': 100, 'label': 'Low'},
+    '50↑': {'min': 50, 'label': 'Micro'},
+    '25↑': {'min': 25, 'label': 'Penny'},
+    '10↑': {'min': 10, 'label': 'Ultra Penny'},
+}
+
+# ============================================================================
+# UI CONFIGURATION
+# ============================================================================
+
+UI_CONFIG = {
+    'THEME': 'dark',
+    'REFRESH_INTERVAL': 300,        # Auto-refresh every 5 minutes
+    'MAX_ROWS_DISPLAY': 100,        # Max rows in main table
+    'CHART_HEIGHT': 400,            # Default chart height in pixels
+    'SHOW_TOOLTIPS': True,
+    'ANIMATE_CHARTS': True,
+    'DEFAULT_TAB': 'overview',
+}
+
+# ============================================================================
+# PERFORMANCE BENCHMARKS
+# ============================================================================
+
+PERFORMANCE_BENCHMARKS = {
+    'TARGET_LOAD_TIME': 3.0,        # Seconds
+    'TARGET_REFRESH_TIME': 2.0,     # Seconds
+    'TARGET_CALCULATION_TIME': 1.0, # Seconds
+    'MIN_DATA_QUALITY': 0.95,       # 95% data completeness required
+}
+
+# ============================================================================
+# ERROR MESSAGES
+# ============================================================================
+
+ERROR_MESSAGES = {
+    'DATA_LOAD_FAILED': "Unable to load data. Please check your internet connection.",
+    'INVALID_DATA': "Data validation failed. Some information may be incorrect.",
+    'CALCULATION_ERROR': "Error in calculations. Showing cached results.",
+    'NO_DATA': "No data available for the selected filters.",
+    'SHEET_NOT_FOUND': "Data source not found. Please check configuration.",
+}
+
+# ============================================================================
+# SUCCESS MESSAGES
+# ============================================================================
+
+SUCCESS_MESSAGES = {
+    'DATA_LOADED': "Data loaded successfully",
+    'FILTERS_APPLIED': "Filters applied",
+    'WATCHLIST_CREATED': "Watchlist created successfully",
+    'ALERT_TRIGGERED': "New alert triggered",
 }
 
 # ============================================================================
@@ -397,11 +650,16 @@ def validate_constants():
     levels = list(SIGNAL_LEVELS.values())
     assert levels == sorted(levels, reverse=True), "Signal levels must be in descending order"
     
+    # Check data sources are configured
+    assert GOOGLE_SHEET_ID != "YOUR_SHEET_ID_HERE", "Please update GOOGLE_SHEET_ID with your actual sheet ID"
+    
     print("✅ Constants validated successfully")
 
 # Run validation when module loads
 if __name__ == "__main__":
     validate_constants()
     print("\nM.A.N.T.R.A. Constants loaded")
+    print(f"Data Source: Google Sheets ID {GOOGLE_SHEET_ID[:10]}...")
     print(f"Factors: {list(FACTOR_WEIGHTS.keys())}")
     print(f"Signal levels: {list(SIGNAL_LEVELS.keys())}")
+    print("\n⚠️  IMPORTANT: Update GOOGLE_SHEET_ID with your actual Google Sheets ID!")
