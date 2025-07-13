@@ -1,8 +1,7 @@
 """
 health_panel.py - M.A.N.T.R.A. System Health Monitor
 ===================================================
-Monitors data quality, system performance, and operational health
-Provides diagnostics and troubleshooting information
+Modified version that works without psutil for faster deployment
 """
 
 import pandas as pd
@@ -13,8 +12,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 import time
-import psutil
 import streamlit as st
+
+# Try to import psutil, but don't fail if not available
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    logging.info("psutil not available - system resource monitoring disabled")
 
 # Import from constants
 from constants import DATA_QUALITY, REQUIRED_COLUMNS, PROCESSING_LIMITS
@@ -116,9 +122,10 @@ class HealthMonitor:
         # Check component health
         component_health.update(self._check_component_health(cache_stats))
         
-        # Check system resources
-        resource_health = self._check_system_resources()
-        performance_health.update(resource_health)
+        # Check system resources (only if psutil available)
+        if PSUTIL_AVAILABLE:
+            resource_health = self._check_system_resources()
+            performance_health.update(resource_health)
         
         # Aggregate issues
         for metric in data_health.values():
@@ -478,8 +485,12 @@ class HealthMonitor:
         return health_metrics
     
     def _check_system_resources(self) -> Dict[str, HealthMetric]:
-        """Check system resource usage"""
+        """Check system resource usage (only if psutil available)"""
         health_metrics = {}
+        
+        if not PSUTIL_AVAILABLE:
+            # Return empty metrics if psutil not available
+            return health_metrics
         
         try:
             # CPU usage
@@ -699,6 +710,10 @@ class HealthMonitor:
         if len(issues) > 5:
             recommendations.append("Run full system diagnostic")
         
+        # If psutil not available
+        if not PSUTIL_AVAILABLE:
+            recommendations.append("Install psutil for system monitoring")
+        
         return list(set(recommendations))[:5]  # Top 5 unique recommendations
     
     def _update_history(self, health_report: SystemHealth):
@@ -788,6 +803,10 @@ def render_health_panel(st_container, health_report: SystemHealth):
             for comp, status in health_report.component_health.items():
                 st.text(f"  {comp}: {status.value}")
         
+        # System monitoring note
+        if not PSUTIL_AVAILABLE:
+            st.caption("💡 System monitoring limited - psutil not installed")
+        
         # Last updated
         st.caption(f"Last updated: {health_report.timestamp.strftime('%H:%M:%S')}")
 
@@ -836,6 +855,9 @@ if __name__ == "__main__":
     print("  - Data quality and anomalies")
     print("  - System performance")
     print("  - Component status")
-    print("  - Resource usage")
+    if PSUTIL_AVAILABLE:
+        print("  - Resource usage (CPU/Memory)")
+    else:
+        print("  - Resource usage (NOT AVAILABLE - psutil not installed)")
     print("\nUse check_system_health() to run diagnostics")
     print("="*60)
