@@ -1,20 +1,11 @@
-streamlit>=1.33
-pandas>=2.2
-numpy>=1.26
-scipy>=1.12
-plotly>=5.20
-openpyxl>=3.1
-# For typing support and dataclasses in older Python (optional for cloud)
-typing-extensions>=4.11
+# Core dependencies for Streamlit Cloud deployment
+# Minimal, stable versions for permanent production use
 
-# If you use these for specific modules:
-# edge_finder and watchlist_builder sometimes use these (optional, remove if unused):
-# tqdm>=4.66
-# requests>=2.31
+streamlit==1.32.0
+pandas==2.2.0
+plotly==5.19.0
+numpy==1.26.3
 
-# For matplotlib export support (optional)
-# matplotlib>=3.8
-
-# Uncomment if using any other libraries in code:
-# yfinance
-# altair
+# No additional dependencies needed
+# Keeping it minimal for fastest cloud deployment
+# All features work with just these 4 packages
