@@ -1,16 +1,15 @@
-# M.A.N.T.R.A. — Locked Production Requirements
-# Only core, stable, and supported packages for Streamlit Community Cloud.
+# Core dependencies for M.A.N.T.R.A. Streamlit deployment
+# Complete list with all required packages
 
+# Core packages
 streamlit==1.32.0
 pandas==2.2.0
 plotly==5.19.0
 numpy==1.26.3
-psutil==5.9.8   # For health_panel.py (system monitoring)
 
-# No other dependencies required.
-# All features, UI, and logic will work with just these packages.
-# Do NOT add: scipy, sklearn, ta, yfinance, requests, etc. — not needed!
+# Additional required packages
+psutil==5.9.8      # System monitoring for health panel
+requests==2.31.0   # HTTP requests for data loading
+openpyxl==3.1.2   # Excel file support (if needed)
 
-# -----
-# For Google Sheets/CSV URL data, use pd.read_csv with a published "Anyone with link" URL.
-# -----
+# All dependencies for production deployment
