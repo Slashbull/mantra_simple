@@ -1,11 +1,11 @@
-# Minimal requirements for fastest deployment
-# Remove psutil temporarily to speed up
+# Optimized for Streamlit Community Cloud
+# These versions are known to work well on the platform
 
 streamlit==1.32.0
-pandas==2.0.0     # Older version, faster install
-plotly==5.17.0    # Slightly older, more stable
-numpy==1.24.0     # Compatible older version
-requests==2.31.0  # Still needed for data loading
+pandas==2.0.3
+numpy==1.24.3
+plotly==5.14.1
+requests==2.31.0
 
-# Note: psutil removed for faster deployment
-# openpyxl removed as not essential
+# Note: psutil excluded for faster deployment
+# openpyxl excluded as not essential
