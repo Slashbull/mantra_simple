@@ -1,11 +1,8 @@
-# Optimized for Streamlit Community Cloud
-# These versions are known to work well on the platform
+# M.A.N.T.R.A. Production Requirements - FINAL LOCKED VERSION
+# Only essential packages for Streamlit Community Cloud
 
 streamlit==1.32.0
-pandas==2.0.3
-numpy==1.24.3
-plotly==5.14.1
-requests==2.31.0
-
-# Note: psutil excluded for faster deployment
-# openpyxl excluded as not essential
+pandas==2.2.0
+plotly==5.19.0
+numpy==1.26.3
+psutil==5.9.8
