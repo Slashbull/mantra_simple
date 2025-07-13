@@ -1,15 +1,11 @@
-# Core dependencies for M.A.N.T.R.A. Streamlit deployment
-# Complete list with all required packages
+# Minimal requirements for fastest deployment
+# Remove psutil temporarily to speed up
 
-# Core packages
 streamlit==1.32.0
-pandas==2.2.0
-plotly==5.19.0
-numpy==1.26.3
+pandas==2.0.0     # Older version, faster install
+plotly==5.17.0    # Slightly older, more stable
+numpy==1.24.0     # Compatible older version
+requests==2.31.0  # Still needed for data loading
 
-# Additional required packages
-psutil==5.9.8      # System monitoring for health panel
-requests==2.31.0   # HTTP requests for data loading
-openpyxl==3.1.2   # Excel file support (if needed)
-
-# All dependencies for production deployment
+# Note: psutil removed for faster deployment
+# openpyxl removed as not essential
