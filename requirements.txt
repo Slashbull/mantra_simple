@@ -1,12 +1,16 @@
-# Core dependencies for Streamlit Cloud deployment
-# Minimal, stable versions for permanent production use
+# M.A.N.T.R.A. — Locked Production Requirements
+# Only core, stable, and supported packages for Streamlit Community Cloud.
 
 streamlit==1.32.0
 pandas==2.2.0
 plotly==5.19.0
 numpy==1.26.3
-psutil==5.9.8  # For system resource monitoring in health_panel.py
+psutil==5.9.8   # For health_panel.py (system monitoring)
 
-# No additional dependencies needed
-# Keeping it minimal for fastest cloud deployment
-# All features work with just these 4 packages
+# No other dependencies required.
+# All features, UI, and logic will work with just these packages.
+# Do NOT add: scipy, sklearn, ta, yfinance, requests, etc. — not needed!
+
+# -----
+# For Google Sheets/CSV URL data, use pd.read_csv with a published "Anyone with link" URL.
+# -----
